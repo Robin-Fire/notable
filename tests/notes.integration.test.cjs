@@ -34,6 +34,7 @@ function setup() {
   let viewListener = () => {}
   const get = async (id) => ({ ok: true, value: id === captureId ? makeNote(captureId, 'Captured thought', 'inbox') : makeNote(noteId, 'Existing note', 'note') })
   const api = {
+    updates: { getStatus: async () => ({ ok: true, value: { status: 'idle' } }), check: async () => ({ ok: true, value: undefined }), install: async () => ({ ok: true, value: undefined }), onChanged: () => () => {} },
     notes: {
       list: async () => ({ ok: true, value: { items: [makeNote(noteId, 'Existing note', 'note')], nextCursor: null, total: 1 } }),
       tags: async () => ({ ok: true, value: ['Work', 'Personal'] }), taxonomy: async () => ({ ok: true, value: { categories: [], tags: [{ id: '33333333-3333-4333-8333-333333333333', name: 'Work', categoryId: null, color: '#85858e', count: 1 }, { id: '44444444-4444-4444-8444-444444444444', name: 'Personal', categoryId: null, color: '#85858e', count: 1 }] } }), image: async () => ({ ok: false, message: 'Missing image' }),
