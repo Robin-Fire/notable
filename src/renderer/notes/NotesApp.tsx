@@ -1,0 +1,402 @@
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { Archive, ArrowLeft, ArrowRight, Check, ChevronDown, CircleHelp, Copy, Download, FileText, FolderKanban, FolderOpen, Hash, Info, Monitor, MoreHorizontal, Palette, Plus, Search, Settings as SettingsIcon, Shield, Sun, Trash2, Undo2, X, CalendarDays } from 'lucide-react'
+import type { Category, Note, NoteFilter, NotePage, Settings, TagRecord } from '../../shared/contracts'
+import { localDateBounds, toLocalISODate } from '../../shared/plannerDates'
+import { InboxView } from '../inbox/InboxView'
+import { CalenbanView } from '../calenban/CalenbanView'
+import { BacklogView } from '../backlog/BacklogView'
+import { collectTags, TagEditor } from '../components/TagEditor'
+import { ItemImages } from '../components/ItemImages'
+
+type NoteDetail = Note & { meetingTitle: string | null }
+type ViewName = 'all' | 'inbox' | 'calenban' | 'backlog' | 'trash' | 'settings' | 'tag'
+type ItemKind = Note['kind']
+const itemKinds: { value: ItemKind; label: string }[] = [{ value: 'inbox', label: 'Inbox' }, { value: 'note', label: 'Notes' }, { value: 'task', label: 'To-dos' }]
+const dateOptions = [{ value: 'all', label: 'All time' }, { value: 'today', label: 'Today' }, { value: 'last7', label: 'Last 7 days' }, { value: 'custom', label: 'Custom' }]
+const kindLabel = (kind: ItemKind) => itemKinds.find((item) => item.value === kind)?.label ?? kind
+const resultValue = <T,>(result: { ok: true; value: T } | { ok: false; message: string }): T => {
+  if (!result.ok) throw new Error(result.message)
+  return result.value
+}
+const isTextEntry = (element: EventTarget | null) => element instanceof HTMLElement && (element.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName))
+const todayISO = () => toLocalISODate(new Date())
+const startOfLocalDay = (iso: string) => localDateBounds(iso).start
+const endOfLocalDay = (iso: string) => localDateBounds(iso).end
+const sixDaysAgo = () => { const date = new Date(); date.setHours(0, 0, 0, 0); date.setDate(date.getDate() - 6); return date.getTime() }
+const formatTime = (value: number) => new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(value)
+const formatDateTime = (value: number) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(value)
+function noteDateLabel(value: number) {
+  const date = new Date(value), now = new Date()
+  if (date.toDateString() === now.toDateString()) return 'Today'
+  const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1)
+  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday'
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'full' }).format(date)
+}
+function excerpt(body: string) { return body.replace(/\s+/g, ' ').trim() || 'Empty note' }
+
+export function NotesApp() {
+  const [view, setView] = useState<ViewName>('all')
+  const [notes, setNotes] = useState<NoteDetail[]>([])
+  const [total, setTotal] = useState(0)
+  const [inboxCount, setInboxCount] = useState(0)
+  const [cursor, setCursor] = useState<NotePage['nextCursor']>(null)
+  const [query, setQuery] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+  const [dateRange, setDateRange] = useState('all')
+  const [kindFilters, setKindFilters] = useState<ItemKind[]>([])
+  const [tagFilters, setTagFilters] = useState<string[]>([])
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [tagSearch, setTagSearch] = useState('')
+  const activeFilterCount = kindFilters.length + tagFilters.length + (dateRange === 'all' ? 0 : 1)
+  const [availableTags, setAvailableTags] = useState<string[]>([])
+  const [categories, setCategories] = useState<Category[]>([])
+  const [tagRecords, setTagRecords] = useState<TagRecord[]>([])
+  const [selectedTagId, setSelectedTagId] = useState<string | null>(null)
+  const [categoriesOpen, setCategoriesOpen] = useState(true)
+  const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({})
+  const [newCategory, setNewCategory] = useState(false)
+  const [categoryDraft, setCategoryDraft] = useState('')
+  const [addingTagTo, setAddingTagTo] = useState<string | null>(null)
+  const [tagNameDraft, setTagNameDraft] = useState('')
+  const [customFrom, setCustomFrom] = useState(todayISO())
+  const [customTo, setCustomTo] = useState(todayISO())
+  const [detailId, setDetailId] = useState<string | null>(null)
+  const [focusedId, setFocusedId] = useState<string | null>(null)
+  const [detail, setDetail] = useState<NoteDetail | null>(null)
+  const [selected, setSelected] = useState<string[]>([])
+  const [settings, setSettings] = useState<Settings | null>(null)
+  const [displays, setDisplays] = useState<{ id: number; label: string; primary: boolean }[]>([])
+  const [editText, setEditText] = useState('')
+  const [editTags, setEditTags] = useState<string[]>([])
+  const [tagDraft, setTagDraft] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [discardPrompt, setDiscardPrompt] = useState(false)
+  const pendingEditorAction = useRef<(() => void) | null>(null)
+  const requestLeaveRef = useRef<(action: () => void) => void>(() => {})
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [toast, setToast] = useState('')
+  const [browserCaptureOpen, setBrowserCaptureOpen] = useState(false)
+  const [browserCaptureText, setBrowserCaptureText] = useState('')
+  const [recordingShortcut, setRecordingShortcut] = useState(false)
+  const [updateStatus, setUpdateStatus] = useState<{ status: string; version?: string }>({ status: 'idle' })
+  const [firstRun, setFirstRun] = useState(false)
+  const searchRef = useRef<HTMLInputElement>(null)
+  const noteListRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(query), 150)
+    return () => clearTimeout(timer)
+  }, [query])
+
+  const loadSettings = useCallback(async () => {
+    try {
+      const [loaded, screens] = await Promise.all([window.notable.settings.get(), window.notable.settings.displays()])
+      const nextSettings = resultValue(loaded)
+      setSettings(nextSettings)
+      setDisplays(resultValue(screens))
+      setFirstRun(!nextSettings.firstRunComplete)
+      document.documentElement.dataset.theme = nextSettings.theme
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Settings are unavailable.') }
+  }, [])
+
+  const loadInboxCount = useCallback(async () => {
+    try { setInboxCount(resultValue(await window.notable.planner.inboxCount())) } catch { /* the Inbox view reports its own load error */ }
+  }, [])
+  const loadTags = useCallback(async () => {
+    try { const data = resultValue(await window.notable.notes.taxonomy()); setCategories(data.categories); setTagRecords(data.tags); setAvailableTags(data.tags.map((tag) => tag.name)) } catch { /* Older test fixtures may omit taxonomy. */ }
+  }, [])
+
+  const filter = useMemo<NoteFilter>(() => {
+    let dateFrom: number | undefined, dateTo: number | undefined
+    if (dateRange === 'today') { const today = todayISO(); dateFrom = startOfLocalDay(today); dateTo = endOfLocalDay(today) }
+    if (dateRange === 'last7') { dateFrom = sixDaysAgo(); dateTo = endOfLocalDay(todayISO()) }
+    if (dateRange === 'custom') { dateFrom = startOfLocalDay(customFrom); dateTo = endOfLocalDay(customTo) }
+    const scope = view === 'trash' ? 'trash' : 'notes'
+    const selectedTag = tagRecords.find((tag) => tag.id === selectedTagId)
+    return { query: debouncedQuery, scope, dateFrom, dateTo, kinds: kindFilters.length ? kindFilters : undefined, tags: view === 'tag' ? [selectedTag?.name ?? '__missing_tag__'] : tagFilters.length ? tagFilters : undefined, limit: 50, sort: 'newest' }
+  }, [dateRange, customFrom, customTo, debouncedQuery, kindFilters, tagFilters, tagRecords, selectedTagId, view])
+
+  const loadNotes = useCallback(async (nextCursor?: NotePage['nextCursor'], append = false) => {
+    setLoading(true); setError('')
+    try {
+      const page = resultValue(await window.notable.notes.list({ ...filter, cursor: nextCursor ?? undefined }))
+      setNotes((current) => append ? [...current, ...page.items] : page.items)
+      setTotal(page.total); setCursor(page.nextCursor)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Notes could not be loaded.') }
+    finally { setLoading(false) }
+  }, [filter])
+
+  useEffect(() => { void loadNotes(); setSelected([]) }, [loadNotes])
+  useEffect(() => { void loadSettings(); void loadInboxCount(); void loadTags() }, [loadSettings, loadInboxCount, loadTags])
+  useEffect(() => window.notable.notes.onChanged(() => { void loadNotes(); void loadTags() }), [loadNotes, loadTags])
+  useEffect(() => window.notable.planner.onChanged(() => { void loadInboxCount() }), [loadInboxCount])
+  useEffect(() => window.notable.settings.onChanged(() => { void loadSettings() }), [loadSettings])
+  useEffect(() => {
+    void window.notable.updates.getStatus().then((result) => { if (result.ok) setUpdateStatus(result.value) })
+    return window.notable.updates.onChanged(setUpdateStatus)
+  }, [])
+  useEffect(() => { const unsubscribe = window.notable.windows.onView((next) => requestLeaveRef.current(() => { setView(next); setDetailId(null); setDetail(null); setSelected([]) })); window.notable.windows.ready(); return unsubscribe }, [])
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f' && (view === 'all' || view === 'trash' || view === 'tag') && !(event.target instanceof HTMLElement && event.target.closest('[role="dialog"]'))) { event.preventDefault(); searchRef.current?.focus(); return }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's' && editing) { event.preventDefault(); void saveEdit(); return }
+      if (view !== 'all' && view !== 'trash' && view !== 'tag') return
+      if (isTextEntry(event.target)) return
+      if (event.target instanceof HTMLElement && event.target.closest('button, a, [role="button"], [role="dialog"]') && !((event.key === 'ArrowDown' || event.key === 'ArrowUp') && event.target.closest('.note-row-open'))) return
+      if (event.key === 'Delete' && selected.length) { event.preventDefault(); void trashSelected() }
+      if (event.key === 'Escape' && detailId && window.innerWidth < 960) { setDetailId(null); setDetail(null) }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        const currentId = focusedId ?? detailId
+        const index = notes.findIndex((note) => note.id === currentId)
+        const next = notes[Math.max(0, Math.min(notes.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)))]
+        if (next) { event.preventDefault(); setFocusedId(next.id); noteListRef.current?.querySelector<HTMLButtonElement>(`[data-note-id="${next.id}"] .note-row-open`)?.focus() }
+      }
+      if (event.key === 'Enter') {
+        const selectedNote = notes.find((note) => note.id === focusedId) ?? (!detailId ? notes[0] : undefined)
+        if (selectedNote) { event.preventDefault(); requestLeaveRef.current(() => void openNote(selectedNote.id)) }
+      }
+    }
+    window.addEventListener('keydown', listener)
+    return () => window.removeEventListener('keydown', listener)
+  })
+
+  useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 2600); return () => clearTimeout(timer) }, [toast])
+  useEffect(() => { const open = () => setBrowserCaptureOpen(true); window.addEventListener('notable:browser-capture', open); return () => window.removeEventListener('notable:browser-capture', open) }, [])
+
+  async function submitBrowserCapture() {
+    if (!browserCaptureText.trim()) return
+    try { resultValue(await window.notable.capture.submit({ requestId: crypto.randomUUID(), generation: 0, body: browserCaptureText })); setBrowserCaptureText(''); setBrowserCaptureOpen(false); nav('inbox') }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Capture could not be saved.') }
+  }
+
+  async function openNote(id: string) {
+    setDetailId(id); setEditing(false); setDiscardPrompt(false)
+    try { const record = resultValue(await window.notable.notes.get(id)); setDetail(record); if (record) { setEditText(record.body); setEditTags(record.tags); setTagDraft('') } }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'This note could not be opened.') }
+  }
+  function clearFilters() { setQuery(''); setDateRange('all'); setKindFilters([]); setTagFilters([]) }
+  function nav(next: ViewName) { requestLeaveRef.current(() => { setSelectedTagId(null); setView(next); setDetailId(null); setFocusedId(null); setDetail(null); setSelected([]); clearFilters() }) }
+  function openTag(tag: TagRecord) { requestLeaveRef.current(() => { setSelectedTagId(tag.id); setView('tag'); setDetailId(null); setDetail(null); setSelected([]); clearFilters() }) }
+  async function addCategory() {
+    if (!categoryDraft.trim()) return
+    try { const category = resultValue(await window.notable.notes.createCategory(categoryDraft)); setCategoryDraft(''); setNewCategory(false); setCategoriesOpen(true); setExpandedCategories((current) => ({ ...current, [category.id]: true })); void loadTags() }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Category could not be added.') }
+  }
+  async function addTag(categoryId: string | null) {
+    if (!tagNameDraft.trim()) return
+    try { const tag = resultValue(await window.notable.notes.createTag({ name: tagNameDraft, categoryId })); setTagNameDraft(''); setAddingTagTo(null); void loadTags(); openTag(tag) }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Tag could not be added.') }
+  }
+  async function changeTag(input: { categoryId: string | null; color: string }) {
+    if (!selectedTagId) return
+    try { resultValue(await window.notable.notes.updateTag({ id: selectedTagId, ...input })); void loadTags() }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Tag could not be updated.') }
+  }
+  const selectedTag = tagRecords.find((tag) => tag.id === selectedTagId) ?? null
+  function toggleKind(kind: ItemKind) { requestEditorLeave(() => setKindFilters((current) => current.includes(kind) ? current.filter((value) => value !== kind) : [...current, kind])) }
+  function toggleTag(tag: string) { requestEditorLeave(() => setTagFilters((current) => current.includes(tag) ? current.filter((value) => value !== tag) : [...current, tag])) }
+  async function saveEdit() {
+    if (!detail) return
+    try {
+      const updated = resultValue(await window.notable.notes.updateItem({ id: detail.id, expectedRevision: detail.revision, body: editText, tags: collectTags(editTags, tagDraft) }))
+      setDetail(updated); setEditTags(updated.tags); setTagDraft('')
+      setEditing(false); setToast('Changes saved')
+      const next = pendingEditorAction.current; pendingEditorAction.current = null; next?.()
+    } catch (reason) { pendingEditorAction.current = null; setDiscardPrompt(false); setError(reason instanceof Error ? reason.message : 'The note could not be saved.') }
+  }
+  async function trashSelected() {
+    if (!selected.length) return
+    try { resultValue(await window.notable.notes.trash(selected)); setSelected([]); setDetailId(null); setDetail(null); setToast(`${selected.length} ${selected.length === 1 ? 'note moved' : 'notes moved'} to Trash`) }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Notes could not be moved to Trash.') }
+  }
+  async function copyIds(ids: string[]) {
+    try { const text = resultValue(await window.notable.notes.copy(ids)); setToast(text ? 'Copied to clipboard' : 'Nothing to copy') }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not copy notes.') }
+  }
+  async function exportData(scope: 'selected' | 'all' | 'full', ids?: string[]) {
+    if (scope === 'selected' && !ids?.length) return
+    try { resultValue(await window.notable.data.export({ scope, format: 'md', ids })); setToast('Export ready') }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Export failed.') }
+  }
+  const toggleSelected = (id: string) => {
+    if (!selected.includes(id) && selected.length >= 500) { setToast('Select up to 500 notes at a time'); return }
+    setSelected((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
+  }
+  async function restoreOne(id: string) { try { resultValue(await window.notable.notes.restore([id])); setToast('Note restored') } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not restore note.') } }
+  async function deleteOne(id: string) { try { resultValue(await window.notable.notes.deletePermanently([id])); setToast('Note deleted permanently'); setDetailId(null); setDetail(null) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not delete note.') } }
+  async function emptyTrash() { try { resultValue(await window.notable.notes.emptyTrash()); setToast('Trash emptied'); setDetailId(null); setDetail(null) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not empty Trash.') } }
+
+  const saveSettings = async (update: Partial<Pick<Settings, 'shortcut' | 'shortcutEnabled' | 'launchAtLogin' | 'theme' | 'monitor' | 'captureProtection' | 'protectionTestApp' | 'protectionTestDate' | 'closeToTray' | 'firstRunComplete'>>) => {
+    try { const saved = resultValue(await window.notable.settings.update(update)); setSettings(saved); document.documentElement.dataset.theme = saved.theme; return true }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Setting could not be saved.'); return false }
+  }
+  const finishFirstRun = async (shortcut: string, launchAtLogin: boolean) => {
+    const done = await saveSettings({ shortcut, shortcutEnabled: true, launchAtLogin, firstRunComplete: true })
+    if (done) { setFirstRun(false); setToast('Setup complete'); window.notable.windows.openCapture() }
+  }
+  const continueTrayOnly = async (launchAtLogin: boolean) => {
+    const done = await saveSettings({ shortcutEnabled: false, launchAtLogin, firstRunComplete: true })
+    if (done) setFirstRun(false)
+  }
+
+  const renderRows = () => {
+    const hasFilters = !!(debouncedQuery || kindFilters.length || (view !== 'tag' && tagFilters.length) || dateRange !== 'all')
+    if (!notes.length && !loading && !error) return <div className="empty-state">
+      <div className="empty-mark"><FileText size={20} /></div><h2>{view === 'tag' && !hasFilters ? 'No items with this tag yet.' : hasFilters ? 'No matching items.' : view === 'trash' ? 'Trash is empty.' : 'Your next thought goes here.'}</h2>
+      <p>{hasFilters ? 'Try another phrase or clear the filters.' : view === 'tag' ? 'Items using this tag will appear here.' : view === 'trash' ? 'Deleted items stay here until you remove them permanently.' : `Press ${settings?.shortcut.replace('Control', 'Ctrl') ?? 'Ctrl+N'} from any app to capture a note.`}</p>
+      {hasFilters ? <button className="button secondary" onClick={() => requestEditorLeave(clearFilters)}>Clear filters</button> : view === 'all' && <button className="button primary" onClick={() => window.notable.windows.openCapture()}>Capture a thought <ArrowRight size={15} /></button>}
+    </div>
+    const groups = new Map<string, NoteDetail[]>()
+    for (const note of notes) { const label = noteDateLabel(view === 'trash' ? note.deletedAt ?? note.createdAt : note.createdAt); groups.set(label, [...(groups.get(label) ?? []), note]) }
+    const rows = [...groups.entries()].map(([label, items]) => <section className="date-group" key={label}>
+      <div className="date-label">{label}</div>
+      {items.map((note) => <article key={note.id} data-note-id={note.id} className={`note-row ${detailId === note.id || focusedId === note.id ? 'is-active' : ''} ${selected.includes(note.id) ? 'is-selected' : ''}`}>
+        <button className="note-row-open" aria-label={`Open ${note.kind === 'note' ? 'note' : note.kind === 'task' ? 'to-do' : 'inbox item'} ${note.body.trim() ? excerpt(note.body).slice(0, 80) : note.images.length ? 'Image capture' : 'Empty note'}`} onClick={() => requestEditorLeave(() => void openNote(note.id))} onFocus={() => setFocusedId(note.id)}>
+          <span className="note-preview">{note.body.trim() ? excerpt(note.body) : note.images.length ? 'Image capture' : 'Empty note'}</span>
+          <span className="note-meta"><time>{formatTime(view === 'trash' ? note.deletedAt ?? note.createdAt : note.createdAt)}</time><span className="note-kind-chip">{kindLabel(note.kind)}</span>{note.images.length > 0 && <span className="note-image-count">{note.images.length} {note.images.length === 1 ? 'image' : 'images'}</span>}{note.tags.map((tag) => <span className="note-tag-chip" key={tag} style={{ color: tagRecords.find((record) => record.name.toLocaleLowerCase() === tag.toLocaleLowerCase())?.color }}>{tag}</span>)}</span>
+        </button>
+        <input className="row-select" type="checkbox" aria-label="Select note" checked={selected.includes(note.id)} onChange={() => toggleSelected(note.id)} />
+      </article>)}
+    </section>)
+    return <>{rows}{cursor && <button className="load-more" onClick={() => void loadNotes(cursor, true)} disabled={loading}>Load more <ChevronDown size={14} /></button>}</>
+  }
+
+  const hasEdits = !!detail && (editText !== detail.body || collectTags(editTags, tagDraft).join('\u0000') !== detail.tags.join('\u0000'))
+  const requestEditorLeave = (action: () => void) => {
+    if (editing && hasEdits) { pendingEditorAction.current = action; setDiscardPrompt(true); return }
+    action()
+  }
+  requestLeaveRef.current = requestEditorLeave
+  const onShortcutKey = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (!recordingShortcut) return
+    event.preventDefault(); event.stopPropagation()
+    if (event.key === 'Escape') { setRecordingShortcut(false); return }
+    if (['Control', 'Alt', 'Shift', 'Meta'].includes(event.key)) return
+    const parts: string[] = []
+    if (event.ctrlKey) parts.push('Control')
+    if (event.altKey) parts.push('Alt')
+    if (event.shiftKey) parts.push('Shift')
+    const key = event.key.length === 1 ? event.key.toUpperCase() : ({ ' ': 'Space', 'ArrowUp': 'Up', 'ArrowDown': 'Down', 'ArrowLeft': 'Left', 'ArrowRight': 'Right' } as Record<string, string>)[event.key] ?? event.key
+    const accelerator = [...parts, key].join('+')
+    if (parts.length) { setRecordingShortcut(false); void saveSettings({ shortcut: accelerator }) }
+  }
+
+  return <div className="notes-window">
+    <aside className="sidebar">
+      <button className="brand" onClick={() => nav('all')}><span className="brand-glyph">n</span><span>notable</span></button>
+      <button type="button" className="sidebar-capture" aria-label="Capture" title="Capture a thought" onClick={() => window.notable.windows.openCapture()}><Plus size={16} /><span>Capture</span><kbd>{settings?.shortcut.replace('Control', 'Ctrl') ?? 'Ctrl+N'}</kbd></button>
+      <div className="side-label">WORKSPACE</div>
+      <nav className="side-nav" aria-label="Main navigation">
+        <button className={view === 'inbox' ? 'active' : ''} onClick={() => nav('inbox')}><Archive size={16} /><span>Inbox</span><span className="side-count">{inboxCount || ''}</span></button>
+        <button className={view === 'calenban' ? 'active' : ''} onClick={() => nav('calenban')}><CalendarDays size={16} /><span>Plan</span></button>
+        <button className={view === 'backlog' ? 'active' : ''} onClick={() => nav('backlog')}><FolderKanban size={16} /><span>Backlog</span></button>
+        <button className={view === 'all' ? 'active' : ''} onClick={() => nav('all')}><FileText size={16} /><span>All notes</span><span className="side-count">{view === 'all' ? total : ''}</span></button>
+      </nav>
+      <div className="sidebar-categories">
+        <div className="category-section-heading"><button type="button" aria-expanded={categoriesOpen} onClick={() => setCategoriesOpen((open) => !open)}>Projects <ChevronDown size={13} className={categoriesOpen ? '' : 'is-closed'} /></button><button type="button" className="category-add" aria-label="Add project" title="Add project" onClick={() => { setCategoriesOpen(true); setNewCategory(true) }}><Plus size={15} /></button></div>
+        {categoriesOpen && <div className="category-tree">
+          {newCategory && <form className="category-inline-form" onSubmit={(event) => { event.preventDefault(); void addCategory() }}><input autoFocus aria-label="New project name" placeholder="Project name" maxLength={60} value={categoryDraft} onChange={(event) => setCategoryDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') setNewCategory(false) }} /><button aria-label="Save project" type="submit"><Check size={13} /></button></form>}
+          {categories.map((category) => { const expanded = expandedCategories[category.id] ?? true; const categoryTags = tagRecords.filter((tag) => tag.categoryId === category.id); return <div className="category-group" key={category.id}><div className="category-row"><button type="button" className="category-toggle" aria-expanded={expanded} onClick={() => setExpandedCategories((current) => ({ ...current, [category.id]: !expanded }))}><ChevronDown size={13} className={expanded ? '' : 'is-closed'} /><span>{category.name}</span></button><button type="button" className="category-add-tag" aria-label={`Add tag to ${category.name}`} title="Add tag" onClick={() => { setAddingTagTo(category.id); setExpandedCategories((current) => ({ ...current, [category.id]: true })) }}><Plus size={13} /></button></div>{expanded && <div className="category-children">{categoryTags.map((tag) => <button type="button" key={tag.id} className={`category-tag ${view === 'tag' && selectedTagId === tag.id ? 'active' : ''}`} onClick={() => openTag(tag)}><Hash size={14} style={{ color: tag.color }} /><span>{tag.name}</span><small>{tag.count || ''}</small></button>)}{addingTagTo === category.id && <form className="category-inline-form" onSubmit={(event) => { event.preventDefault(); void addTag(category.id) }}><input autoFocus aria-label={`New tag in ${category.name}`} placeholder="Tag name" maxLength={40} value={tagNameDraft} onChange={(event) => setTagNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') setAddingTagTo(null) }} /><button aria-label="Save tag" type="submit"><Check size={13} /></button></form>}</div>}</div> })}
+          {tagRecords.some((tag) => tag.categoryId === null) && <div className="category-group"><div className="category-row"><button type="button" className="category-toggle" aria-expanded={expandedCategories.uncategorized ?? true} onClick={() => setExpandedCategories((current) => ({ ...current, uncategorized: !(current.uncategorized ?? true) }))}><ChevronDown size={13} className={(expandedCategories.uncategorized ?? true) ? '' : 'is-closed'} /><span>Uncategorized</span></button></div>{(expandedCategories.uncategorized ?? true) && <div className="category-children">{tagRecords.filter((tag) => tag.categoryId === null).map((tag) => <button type="button" key={tag.id} className={`category-tag ${view === 'tag' && selectedTagId === tag.id ? 'active' : ''}`} onClick={() => openTag(tag)}><Hash size={14} style={{ color: tag.color }} /><span>{tag.name}</span><small>{tag.count || ''}</small></button>)}</div>}</div>}
+        </div>}
+      </div>
+      <nav className="side-nav" aria-label="Trash"><button className={view === 'trash' ? 'active' : ''} onClick={() => nav('trash')}><Trash2 size={16} /><span>Trash</span></button></nav>
+      <div className="sidebar-spacer" />
+      <div className="sidebar-bottom">
+        <button className={view === 'settings' ? 'active' : ''} onClick={() => nav('settings')}><SettingsIcon size={16} /><span>Settings</span></button>
+        <div className="sidebar-footnote">Local by design</div>
+      </div>
+    </aside>
+    <main className="main-area">
+      {view === 'settings' ? <SettingsPanel settings={settings} displays={displays} saveSettings={saveSettings} onBackup={async () => { try { resultValue(await window.notable.data.backup()); setToast('Backup created') } catch (reason) { setError(reason instanceof Error ? reason.message : 'Backup failed.') } }} onRestore={async () => { try { resultValue(await window.notable.data.restore()); setToast('Backup restored') } catch (reason) { setError(reason instanceof Error ? reason.message : 'Restore failed.') } }} firstRun={firstRun} onFinish={finishFirstRun} onTrayOnly={continueTrayOnly} recordingShortcut={recordingShortcut} setRecordingShortcut={setRecordingShortcut} onShortcutKey={onShortcutKey} />
+      : view === 'inbox' ? <InboxView onOpen={(id) => requestEditorLeave(() => { setView('all'); clearFilters(); setDetailId(id); setSelected([]); void openNote(id) })} />
+      : view === 'calenban' ? <CalenbanView />
+      : view === 'backlog' ? <BacklogView />
+      : <>
+        <header className="main-header">
+          <div className="title-stack"><div className="eyebrow">{view === 'trash' ? 'ARCHIVE' : view === 'tag' ? 'PROJECT / TAG' : 'YOUR NOTES'}</div><h1>{view === 'trash' ? 'Trash' : view === 'tag' ? selectedTag?.name ?? 'Tag' : 'All notes'} <span className="title-count">{total.toLocaleString()}</span></h1></div>
+          <div className="header-actions">
+            {updateStatus.status === 'available' && <button className="update-pill" onClick={() => void window.notable.updates.check()}>Downloading update{updateStatus.version ? ` · v${updateStatus.version}` : ''}</button>}
+            {updateStatus.status === 'downloaded' && <button className="update-pill is-ready" onClick={() => void window.notable.updates.install()}>Restart to update{updateStatus.version ? ` · v${updateStatus.version}` : ''}</button>}
+            {view === 'trash' && total > 0 && <button className="button secondary" onClick={() => void emptyTrash()}><Trash2 size={14} /> Empty trash</button>}
+            <button className="button secondary capture-button" onClick={() => window.notable.windows.openCapture()}><Plus size={15} /> Capture</button>
+            <div className="menu-wrap"><button className="icon-button bordered" aria-label="More actions" title="More actions" onClick={(event) => { const menu = event.currentTarget.nextElementSibling; menu?.classList.toggle('is-open') }}><MoreHorizontal size={17} /></button><div className="pop-menu"><button onClick={() => void exportData('all')}><Download size={14} /> Export notes</button><button onClick={() => void exportData('full')}><Archive size={14} /> Export full archive</button><button onClick={() => void window.notable.settings.openFolder()}><FolderOpen size={14} /> Open data folder</button></div></div>
+          </div>
+        </header>
+        {view === 'tag' && selectedTag && <div className="tag-page-settings"><span className="tag-page-icon" style={{ color: selectedTag.color }}><Hash size={18} /></span><div className="tag-page-description"><b>{selectedTag.name}</b><small>{total} {total === 1 ? 'item' : 'items'} with this tag</small></div><label><Palette size={14} /> Color <input type="color" aria-label={`Color for ${selectedTag.name}`} value={selectedTag.color} onChange={(event) => void changeTag({ categoryId: selectedTag.categoryId, color: event.target.value })} /></label><label>Project <select aria-label={`Project for ${selectedTag.name}`} value={selectedTag.categoryId ?? ''} onChange={(event) => void changeTag({ categoryId: event.target.value || null, color: selectedTag.color })}><option value="">No project</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label></div>}
+        <div className="toolbar">
+          <label className="search-box"><Search size={15} /><input ref={searchRef} value={query} onChange={(event) => requestEditorLeave(() => setQuery(event.target.value))} placeholder="Search notes…" aria-label="Search notes" /><kbd>Ctrl F</kbd>{query && <button title="Clear search" onClick={() => requestEditorLeave(() => setQuery(''))}><X size={13} /></button>}</label>
+          {dateRange === 'custom' && <div className="date-inputs"><input type="date" aria-label="From date" value={customFrom} onChange={(event) => requestEditorLeave(() => setCustomFrom(event.target.value))} /><span>to</span><input type="date" aria-label="To date" value={customTo} onChange={(event) => requestEditorLeave(() => setCustomTo(event.target.value))} /></div>}
+          <button className="button secondary small filter-toggle" aria-expanded={filtersOpen} aria-controls="note-filters" onClick={() => setFiltersOpen(!filtersOpen)}>Filters{activeFilterCount > 0 && <span className="filter-count">{activeFilterCount}</span>}<ChevronDown size={13} /></button>
+          <span className="result-count">{total.toLocaleString()} {total === 1 ? 'item' : 'items'}</span>
+        </div>
+        {filtersOpen && <div id="note-filters" className="filter-panel" aria-label="Filters">
+          <div className="filter-row"><span className="filter-heading">TYPE</span><div className="filter-pills" aria-label="Type filters">{itemKinds.map(({ value, label }) => <button key={value} className={`filter-pill ${kindFilters.includes(value) ? 'is-selected' : ''}`} aria-pressed={kindFilters.includes(value)} onClick={() => toggleKind(value)}>{label}</button>)}</div></div>
+          {view !== 'tag' && <div className="filter-row"><span className="filter-heading">TAGS</span><div className="tag-filter-options"><input className="tag-filter-search" aria-label="Find a tag filter" placeholder="Find a tag…" value={tagSearch} onChange={(event) => setTagSearch(event.target.value)} /><div className="filter-pills" aria-label="Tag filters">{availableTags.filter((tag) => tag.toLocaleLowerCase().includes(tagSearch.toLocaleLowerCase())).map((tag) => <button key={tag} className={`filter-pill ${tagFilters.includes(tag) ? 'is-selected' : ''}`} aria-pressed={tagFilters.includes(tag)} onClick={() => toggleTag(tag)}><Hash size={11} style={{ color: tagRecords.find((record) => record.name === tag)?.color }} />{tag}</button>)}{!availableTags.some((tag) => tag.toLocaleLowerCase().includes(tagSearch.toLocaleLowerCase())) && <span className="filter-hint">{availableTags.length ? 'No matching tags' : 'No tags yet'}</span>}</div></div></div>}
+          <div className="filter-row"><span className="filter-heading">DATE</span><div className="filter-pills" aria-label="Date filters">{dateOptions.map(({ value, label }) => <button key={value} className={`filter-pill ${dateRange === value ? 'is-selected' : ''}`} aria-pressed={dateRange === value} onClick={() => requestEditorLeave(() => setDateRange(value))}>{label}</button>)}</div><button className="filter-clear" onClick={() => requestEditorLeave(clearFilters)} disabled={!query && !kindFilters.length && !tagFilters.length && dateRange === 'all'}>Clear all</button></div>
+        </div>}
+        {selected.length > 0 && <div className="selection-toolbar"><span>{selected.length} selected</span><button className="text-action" onClick={() => void copyIds(selected)}><Copy size={14} /> Copy</button><button className="text-action" onClick={() => void exportData('selected', selected)}><Download size={14} /> Export</button>{view === 'trash' ? <><button className="text-action" onClick={async () => { try { resultValue(await window.notable.notes.restore(selected)); setSelected([]) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not restore notes.') } }}><Undo2 size={14} /> Restore</button><button className="text-action danger-action" onClick={async () => { try { resultValue(await window.notable.notes.deletePermanently(selected)); setSelected([]) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not delete notes.') } }}><Trash2 size={14} /> Delete permanently</button></> : <button className="text-action danger-action" onClick={() => void trashSelected()}><Trash2 size={14} /> Move to Trash</button>}</div>}
+        <div className={`content-grid ${detailId ? 'has-detail' : ''}`}>
+          <div className={`list-column ${detailId && window.innerWidth < 960 ? 'mobile-hidden' : ''}`} ref={noteListRef}>
+            {error && <div className="inline-error" role="alert"><Info size={15} /><span>{error}</span><button onClick={() => { setError(''); void loadNotes() }}>Retry</button></div>}
+            {loading && !notes.length ? <div className="loading-state"><span className="spinner" /> Loading notes…</div> : renderRows()}
+          </div>
+          {detailId && <section className="detail-panel" aria-label="Note details">
+            <div className="detail-top"><button className="back-button" onClick={() => requestEditorLeave(() => { setDetailId(null); setDetail(null) })}><ArrowLeft size={15} /> <span>Back</span></button><div className="detail-actions">{!editing ? <><button className="icon-button" title="Copy note" aria-label="Copy note" onClick={() => void copyIds([detailId])}><Copy size={15} /></button>{view === 'trash' ? <><button className="icon-button" title="Restore note" aria-label="Restore note" onClick={() => void restoreOne(detailId)}><Undo2 size={15} /></button><button className="icon-button danger-icon" title="Delete permanently" aria-label="Delete permanently" onClick={() => void deleteOne(detailId)}><Trash2 size={15} /></button></> : <button className="icon-button danger-icon" title="Move to Trash" aria-label="Move to Trash" onClick={() => void trashSelectedFromDetail(detailId, window.notable, setToast, setError, setDetailId, setDetail)}><Trash2 size={15} /></button>}</> : <><button className="button secondary small" onClick={() => hasEdits ? setDiscardPrompt(true) : setEditing(false)}>Cancel</button><button className="button primary small" onClick={() => void saveEdit()}><Check size={14} /> Save</button></>}</div></div>
+            {!detail ? <div className="detail-loading"><span className="spinner" /></div> : <>
+              <div className="detail-meta"><span>{formatDateTime(detail.createdAt)}</span>{detail.updatedAt !== detail.createdAt && <span>Edited {formatDateTime(detail.updatedAt)}</span>}</div>
+              {editing ? <><textarea className="note-editor" value={editText} onChange={(event) => setEditText(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); if (hasEdits) setDiscardPrompt(true); else setEditing(false) } }} aria-label="Edit note" /><div className="detail-tags"><span className="tags-field-label">Tags</span><TagEditor tags={editTags} draft={tagDraft} onTagsChange={setEditTags} onDraftChange={setTagDraft} suggestions={availableTags} /></div></> : <div className="detail-note-text">{detail.body || (detail.images.length ? null : <span className="muted">Empty note</span>)}</div>}
+              <ItemImages images={detail.images} />
+              {editing ? <div className="editor-bottom"><span>{[...editText].length.toLocaleString()} / 50,000</span></div> : <><div className="detail-tags"><span className="tags-field-label">Tags</span><span className="detail-tag-list">{detail.tags.length ? detail.tags.map((tag) => <span className="note-tag-chip" key={tag} style={{ color: tagRecords.find((record) => record.name.toLocaleLowerCase() === tag.toLocaleLowerCase())?.color }}>{tag}</span>) : 'No tags'}</span></div>{view !== 'trash' && <button className="button secondary edit-button" onClick={() => { setEditing(true); setEditText(detail.body); setEditTags(detail.tags); setTagDraft('') }}>Edit note <ArrowRight size={14} /></button>}</>}
+            </>}
+          </section>}
+        </div>
+      </>}
+    </main>
+    {toast && <div className="toast" role="status"><Check size={15} />{toast}</div>}
+    {browserCaptureOpen && <div className="modal-backdrop"><form className="dialog-card browser-capture-dialog" role="dialog" aria-modal="true" aria-labelledby="browser-capture-title" onSubmit={(event) => { event.preventDefault(); void submitBrowserCapture() }}><div className="event-dialog-kicker">QUICK CAPTURE</div><h2 id="browser-capture-title">Capture a thought</h2><textarea autoFocus aria-label="Capture text" placeholder="What’s on your mind?" value={browserCaptureText} onChange={(event) => setBrowserCaptureText(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') setBrowserCaptureOpen(false) }} /><div className="dialog-actions"><button type="button" className="button secondary" onClick={() => setBrowserCaptureOpen(false)}>Cancel</button><button type="submit" className="button primary" disabled={!browserCaptureText.trim()}>Save to Inbox</button></div></form></div>}
+    {discardPrompt && <div className="modal-backdrop"><div className="dialog-card" role="dialog" aria-modal="true" aria-labelledby="discard-title"><h2 id="discard-title">Unsaved changes</h2><p>Save your edits before leaving this note?</p><div className="dialog-actions"><button className="button secondary" onClick={() => { pendingEditorAction.current = null; setDiscardPrompt(false) }}>Stay</button><button className="button secondary" onClick={() => { setDiscardPrompt(false); setEditing(false); if (detail) { setEditText(detail.body); setEditTags(detail.tags); setTagDraft('') } const next = pendingEditorAction.current; pendingEditorAction.current = null; next?.() }}>Discard</button><button className="button primary" onClick={() => { setDiscardPrompt(false); void saveEdit() }}>Save</button></div></div></div>}
+  </div>
+}
+
+async function trashSelectedFromDetail(id: string, api: Window['notable'], setToast: (value: string) => void, setError: (value: string) => void, setDetailId: (value: string | null) => void, setDetail: (value: NoteDetail | null) => void) {
+  const result = await api.notes.trash([id])
+  if (result.ok) { setDetailId(null); setDetail(null); setToast('Note moved to Trash') } else setError(result.message)
+}
+
+function SettingsPanel({ settings, displays, saveSettings, onBackup, onRestore, firstRun, onFinish, onTrayOnly, recordingShortcut, setRecordingShortcut, onShortcutKey }: {
+  settings: Settings | null; displays: { id: number; label: string; primary: boolean }[]; saveSettings: (update: Partial<Pick<Settings, 'shortcut' | 'shortcutEnabled' | 'launchAtLogin' | 'theme' | 'monitor' | 'captureProtection' | 'protectionTestApp' | 'protectionTestDate' | 'closeToTray' | 'firstRunComplete'>>) => Promise<boolean>; onBackup: () => void; onRestore: () => void; firstRun: boolean; onFinish: (shortcut: string, login: boolean) => void; onTrayOnly: (login: boolean) => void; recordingShortcut: boolean; setRecordingShortcut: (value: boolean) => void; onShortcutKey: (event: ReactKeyboardEvent<HTMLButtonElement>) => void
+}) {
+  const [activeSection, setActiveSection] = useState('general')
+  const [testApp, setTestApp] = useState(settings?.protectionTestApp ?? '')
+  const [onboardingShortcut, setOnboardingShortcut] = useState('Control+N')
+  const [onboardingLogin, setOnboardingLogin] = useState(false)
+  useEffect(() => { if (settings) setTestApp(settings.protectionTestApp) }, [settings])
+  const shortcutDisplay = (settings?.shortcut ?? 'Control+N').replace('Control', 'Ctrl').replaceAll('+', ' + ')
+  const sectionItems = [{ id: 'general', label: 'General', icon: SettingsIcon }, { id: 'appearance', label: 'Appearance', icon: Sun }, { id: 'sharing', label: 'Screen sharing', icon: Monitor }, { id: 'data', label: 'Data', icon: Archive }, { id: 'about', label: 'About', icon: Info }]
+  return <div className="settings-layout">
+    <aside className="settings-nav"><div className="settings-title"><div className="eyebrow">PREFERENCES</div><h1>Settings</h1></div>{sectionItems.map(({ id, label, icon: Icon }) => <button className={activeSection === id ? 'active' : ''} aria-label={label} title={label} aria-current={activeSection === id ? 'page' : undefined} key={id} onClick={() => setActiveSection(id)}><Icon size={15} />{label}</button>)}</aside>
+    <section className="settings-content">
+      {activeSection === 'general' && <><div className="settings-heading"><h2>General</h2><p>Choose how notable behaves on this device.</p></div>
+        <div className="setting-row"><div><b>Capture shortcut</b><span>Opens the capture bar from any app. While notable runs, Ctrl+N replaces the usual New shortcut.</span></div><div className="shortcut-control"><button className={`button secondary ${recordingShortcut ? 'recording' : ''}`} onClick={() => setRecordingShortcut(true)} onKeyDown={onShortcutKey}>{recordingShortcut ? 'Press a shortcut…' : shortcutDisplay}</button><span className={`status-dot ${settings?.shortcutRegistered ? 'good' : 'bad'}`} />{!settings?.shortcutRegistered && <small>Unavailable</small>}</div></div>
+        <div className="setting-row"><div><b>Global shortcut</b><span>Turn off keyboard capture and use the tray menu instead.</span></div><Toggle checked={settings?.shortcutEnabled ?? true} onChange={(value) => void saveSettings({ shortcutEnabled: value })} label="Global capture shortcut" /></div>
+        <div className="setting-row"><div><b>Launch at login</b><span>Start notable quietly when you sign in to Windows.</span></div><Toggle checked={settings?.launchAtLogin ?? false} onChange={(value) => void saveSettings({ launchAtLogin: value })} label="Launch at login" /></div>
+        <div className="setting-row"><div><b>Close to tray</b><span>Closing the notes window keeps capture ready in the system tray. Use Quit in the tray menu to exit.</span></div><Toggle checked={settings?.closeToTray ?? true} onChange={(value) => void saveSettings({ closeToTray: value })} label="Close to tray" /></div>
+        <div className="setting-row"><div><b>Capture display</b><span>Choose where the capture bar appears. Missing displays fall back to the pointer's display.</span></div><select className="filter-select setting-select" value={settings?.monitor ?? 'active'} onChange={(event) => void saveSettings({ monitor: event.target.value })}><option value="active">Active window / pointer</option><option value="pointer">Mouse pointer</option><option value="primary">Primary display</option>{displays.map((display) => <option key={display.id} value={`display:${display.id}`}>{display.label}</option>)}</select></div>
+        <div className="setting-row"><div><b>Shortcut registration</b><span>{settings?.shortcutRegistered ? 'Ready. The global shortcut is registered.' : 'The selected shortcut could not be registered. Tray capture remains available.'}</span></div><span className={`status-label ${settings?.shortcutRegistered ? 'success' : 'warning'}`}>{settings?.shortcutRegistered ? 'Ready' : 'Tray only'}</span></div>
+      </>}
+      {activeSection === 'appearance' && <><div className="settings-heading"><h2>Appearance</h2><p>Keep the interface comfortable in any room.</p></div><div className="theme-choices">{(['system', 'light', 'dark'] as const).map((theme) => <button className={`theme-card ${settings?.theme === theme ? 'selected' : ''}`} key={theme} onClick={() => void saveSettings({ theme })}><div className={`theme-swatch ${theme}`}><span /><i /><i /><i /></div><div><b>{theme === 'system' ? 'System' : theme[0]!.toUpperCase() + theme.slice(1)}</b><span>{theme === 'system' ? 'Follow Windows' : `Use ${theme} appearance`}</span></div>{settings?.theme === theme && <Check size={15} />}</button>)}</div><div className="setting-note"><CircleHelp size={15} /> Geist Sans and Geist Mono are bundled for offline use.</div></>}
+      {activeSection === 'sharing' && <><div className="settings-heading"><h2>Screen sharing</h2><p>Ask Windows to exclude notable windows from supported captures.</p></div><div className="protection-card"><div className="protection-icon"><Shield size={17} /></div><div><b>Request capture exclusion</b><span>Best effort. Whether notes are excluded depends on Windows and the meeting or recording app.</span></div><Toggle checked={settings?.captureProtection ?? true} onChange={async (value) => { if (!value && !window.confirm('Notes may appear in screen shares and recordings when exclusion is off. Turn it off?')) return; await saveSettings({ captureProtection: value }) }} label="Capture exclusion" /></div><div className="privacy-copy"><b>Test from another participant's view</b><p>Start a test meeting, share your screen, open notable, and ask someone on another device whether the capture bar and notes window appear. Repeat after changing the meeting app or Windows version.</p><p>File pickers are native Windows windows and may still be visible. Open export and restore dialogs outside a presentation.</p></div><div className="setting-row"><div><b>Last manual test</b><span>{settings?.protectionTestDate ? settings.protectionTestOS ? `Recorded ${settings.protectionTestDate} · Windows ${settings.protectionTestOS}. Retest after changing the meeting app or Windows build.` : 'The Windows build changed since this test. Retest this setup.' : 'Record what you tested. This is a reminder, not technical verification.'}</span></div><div className="test-fields"><input className="text-field" value={testApp} maxLength={80} placeholder="App / version / mode" onChange={(event) => setTestApp(event.target.value)} /><button className="button secondary small" onClick={() => { const date = todayISO(); void saveSettings({ protectionTestApp: testApp, protectionTestDate: date }) }}>Record today’s test</button></div></div><div className="setting-note warning-note"><Info size={15} /> Exclusion does not protect against remote control, malicious capture tools, or cameras. File pickers may be visible; open them outside a presentation.</div></>}
+      {activeSection === 'data' && <><div className="settings-heading"><h2>Data</h2><p>Your notes are stored locally and are not encrypted by notable.</p></div><div className="data-location"><div className="data-folder-icon"><FolderOpen size={18} /></div><div><b>Local storage</b><span>SQLite database · app data folder</span></div><button className="button secondary small" onClick={() => void window.notable.settings.openFolder()}>Open folder</button></div><div className="data-actions"><div><b>Export notes</b><span>Save plain text or Markdown to a folder you choose.</span></div><div><button className="button secondary small" onClick={() => void window.notable.data.export({ scope: 'all', format: 'txt' })}>Export TXT</button><button className="button secondary small" onClick={() => void window.notable.data.export({ scope: 'all', format: 'md' })}>Export Markdown</button></div></div><div className="data-actions"><div><b>SQLite backup</b><span>{settings?.backupWarning ? 'The last backup failed. Notes can still save; try creating a backup again.' : settings?.lastBackupAt ? `Last backup ${formatDateTime(settings.lastBackupAt)}.` : 'No backup has been created yet.'} A full recovery snapshot of notes, tags, tasks, scheduled meetings, and Trash.</span></div><div><button className="button secondary small" onClick={() => void onBackup()}>Create backup</button><button className="button secondary small" onClick={() => void onRestore()}>Restore backup</button></div></div><div className="setting-note"><Info size={15} /> Restoring replaces current data. notable creates a safety backup first. Independent backups can retain notes removed from Trash. Do not sync the live SQLite database through a shared folder.</div></>}
+      {activeSection === 'about' && <><div className="settings-heading"><h2>About notable</h2><p>A quiet, local desktop utility for capturing a thought during a meeting.</p></div><div className="about-card"><div className="about-logo">n</div><div><b>notable</b><span>Version 0.1.0 · Windows 11 x64</span></div></div><div className="setting-row"><div><b>Local diagnostics</b><span>Exports app version, Windows build, shortcut status, and database availability. No note or meeting content.</span></div><button className="button secondary small" onClick={async () => { const result = await window.notable.data.diagnostics(); if (!result.ok) window.alert(result.message) }}>Export diagnostics</button></div><div className="license-box"><b>Third-party licenses</b><p>Electron · Chromium · React · ReUI · dnd-kit · Geist typefaces · Lucide icons · SQLite · other bundled dependencies.</p><p>See the licenses folder in the installed app for full notices.</p></div></>}
+    </section>
+    {firstRun && <div className="modal-backdrop setup-backdrop"><div className="setup-dialog"><div className="setup-brand"><span className="brand-glyph">n</span><span>notable</span><small>FIRST RUN</small></div><h2>Catch a thought.<br />Keep your place.</h2><p>Press a shortcut, type a note, and return to what you were doing. Notes stay on this device.</p><div className="setup-shortcuts"><button className={onboardingShortcut === 'Control+N' ? 'selected' : ''} onClick={() => setOnboardingShortcut('Control+N')}><kbd>Ctrl</kbd><b>+</b><kbd>N</kbd><span>Recommended</span></button><button className={onboardingShortcut === 'Control+Alt+N' ? 'selected' : ''} onClick={() => setOnboardingShortcut('Control+Alt+N')}><kbd>Ctrl</kbd><b>+</b><kbd>Alt</kbd><b>+</b><kbd>N</kbd></button></div><div className="setup-notice"><Shield size={16} /><span>notable asks Windows to hide its windows from supported captures. Meeting apps may still show them; test from another participant's device.</span></div><label className="setup-login"><input type="checkbox" checked={onboardingLogin} onChange={(event) => setOnboardingLogin(event.target.checked)} /> Launch quietly when I sign in</label><div className="dialog-actions"><button className="button secondary" onClick={() => onTrayOnly(onboardingLogin)}>Use tray only</button><button className="button primary" onClick={() => onFinish(onboardingShortcut, onboardingLogin)}>Save and continue <ArrowRight size={15} /></button></div><small className="setup-foot">Ctrl+N replaces the usual New shortcut while notable is running.</small></div></div>}
+  </div>
+}
+
+function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (value: boolean) => void; label: string }) {
+  return <button type="button" className={`toggle ${checked ? 'checked' : ''}`} role="switch" aria-checked={checked} aria-label={label} onClick={() => onChange(!checked)}><span /></button>
+}
+

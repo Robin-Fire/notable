@@ -1,0 +1,47 @@
+{
+  "name": "notable",
+  "version": "0.1.1",
+  "description": "A quiet, local desktop utility for capturing thoughts.",
+  "main": "out/main/index.js",
+  "author": "notable",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
+    "build": "electron-vite build",
+    "test": "node --test",
+    "smoke:capture": "electron scripts/capture-smoke.cjs",
+    "smoke:packaged": "pwsh -NoProfile -File scripts/smoke-packaged.ps1",
+    "postinstall": "electron-builder install-app-deps",
+    "dist:win": "electron-vite build && electron-builder --win nsis"
+  },
+  "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@fontsource/geist-mono": "5.3.0",
+    "@fontsource/geist-sans": "5.3.0",
+    "better-sqlite3": "13.0.3",
+    "electron-updater": "^6.8.9",
+    "lucide-react": "1.48.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@testing-library/react": "^16.3.3",
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "5.2.0",
+    "electron": "44.4.5",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "jsdom": "^29.1.1",
+    "typescript": "7.0.2",
+    "vite": "7.3.6"
+  }
+}

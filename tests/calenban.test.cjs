@@ -1,0 +1,281 @@
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const { after, test } = require('node:test')
+const { randomUUID } = require('node:crypto')
+const Database = require('better-sqlite3')
+const { buildSync } = require('esbuild')
+
+const root = path.resolve(__dirname, '..')
+const generated = path.join(__dirname, '.generated')
+fs.mkdirSync(generated, { recursive: true })
+buildSync({ absWorkingDir: root, entryPoints: ['src/main/storage/database.ts'], outfile: path.join(generated, 'database.cjs'), bundle: true, platform: 'node', format: 'cjs', packages: 'external' })
+buildSync({ absWorkingDir: root, entryPoints: ['src/shared/plannerDrop.ts'], outfile: path.join(generated, 'plannerDrop.cjs'), bundle: true, platform: 'node', format: 'cjs', packages: 'external' })
+buildSync({ absWorkingDir: root, entryPoints: ['src/shared/plannerDates.ts'], outfile: path.join(generated, 'plannerDates.cjs'), bundle: true, platform: 'node', format: 'cjs', packages: 'external' })
+const { Store } = require(path.join(generated, 'database.cjs'))
+const { resolvePlannerDrop } = require(path.join(generated, 'plannerDrop.cjs'))
+const { localDateBounds, eventOverlapsLocalDay } = require(path.join(generated, 'plannerDates.cjs'))
+
+after(() => fs.rmSync(generated, { recursive: true, force: true }))
+
+function withStore(callback) {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'notable-test-'))
+  const store = new Store(path.join(folder, 'notes.sqlite'))
+  try { callback(store) }
+  finally { store.close(); fs.rmSync(folder, { recursive: true, force: true }) }
+}
+
+function captureTask(store, body, tags = []) {
+  const id = store.submitCapture(randomUUID(), 0, body)
+  store.classifyItem(id, 'task', tags)
+  return id
+}
+
+test('pasted image survives draft restart, image-only capture, filing, and backup', async () => {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'notable-image-test-'))
+  const file = path.join(folder, 'notes.sqlite')
+  const backup = path.join(folder, 'backup.sqlite')
+  const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl8n+QAAAAASUVORK5CYII='
+  let store = new Store(file)
+  try {
+    const image = store.addDraftImage(0, dataUrl)
+    assert.deepEqual(store.getCaptureDraft().images, [image])
+    store.close()
+    store = new Store(file)
+    assert.deepEqual(store.getCaptureDraft().images, [image])
+    const id = store.submitCapture(randomUUID(), 0, '')
+    assert.deepEqual(store.getNote(id).images, [{ id: image.id, mimeType: 'image/png' }])
+    assert.equal(store.getItemImage(image.id), dataUrl)
+    assert.deepEqual(store.getCaptureDraft().images, [])
+    store.classifyItem(id, 'task', ['Visual'])
+    assert.equal(store.getNote(id).images.length, 1)
+    await store.backupTo(backup)
+    store.checkIntegrity(backup)
+    const removable = store.addDraftImage(1, dataUrl)
+    store.removeDraftImage(1, removable.id)
+    assert.deepEqual(store.getCaptureDraft().images, [])
+    assert.throws(() => store.addDraftImage(1, 'data:image/png;base64,ZmFrZQ=='), /Paste a PNG/)
+  } finally { store.close(); fs.rmSync(folder, { recursive: true, force: true }) }
+})
+
+test('version 3 database migrates to image storage without losing notes', () => {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'notable-v3-'))
+  const file = path.join(folder, 'notes.sqlite')
+  let store = new Store(file)
+  try {
+    const id = store.submitCapture(randomUUID(), 0, 'Before image support')
+    store.db.exec('DROP TABLE item_images; DROP TABLE capture_draft_images; DELETE FROM schema_migrations WHERE version=4;')
+    store.close()
+    store = new Store(file)
+    assert.equal(store.getNote(id).body, 'Before image support')
+    assert.deepEqual(store.getNote(id).images, [])
+    assert.equal(store.checkIntegrity(), undefined)
+  } finally { store.close(); fs.rmSync(folder, { recursive: true, force: true }) }
+})
+
+test('classification is one-shot and preserves task tags', () => {
+  withStore((store) => {
+    const id = captureTask(store, 'Plan the launch\nWrite the checklist', [' Work  ', 'work', 'Project A'])
+    const day = '2026-09-26'
+    store.movePlannerTask(id, day, null, null)
+    assert.throws(() => store.classifyItem(id, 'task', []), /already been filed/i)
+    assert.equal(store.db.prepare('SELECT planned_date FROM notes WHERE id=?').get(id).planned_date, day)
+    assert.equal(store.db.prepare('SELECT task_status FROM notes WHERE id=?').get(id).task_status, 'open')
+    assert.equal(store.getNote(id).tags.length, 2)
+  })
+})
+
+test('categories and tag colors persist while each tag belongs to one category', () => {
+  withStore((store) => {
+    const id = captureTask(store, 'Categorized task', ['Work'])
+    const first = store.createCategory('Projects')
+    const second = store.createCategory('Areas')
+    const work = store.taxonomy().tags.find((tag) => tag.name === 'Work')
+    assert.equal(work.categoryId, null)
+    store.updateTag(work.id, first.id, '#c2413b')
+    assert.equal(store.taxonomy().tags.find((tag) => tag.id === work.id).categoryId, first.id)
+    assert.equal(store.taxonomy().tags.find((tag) => tag.id === work.id).color, '#c2413b')
+    store.updateTag(work.id, second.id, '#2563eb')
+    assert.equal(store.taxonomy().tags.find((tag) => tag.id === work.id).categoryId, second.id)
+    assert.equal(store.listNotes({ query: '', scope: 'notes', tags: ['Work'], limit: 50, sort: 'newest' }).items[0].id, id)
+    assert.throws(() => store.createTag('work', first.id), /already exists/i)
+  })
+})
+
+test('unscheduled tasks can be reordered and dated tasks can be dropped onto an unscheduled card', () => {
+  withStore((store) => {
+    const first = captureTask(store, 'First')
+    const second = captureTask(store, 'Second')
+    const third = captureTask(store, 'Third')
+    store.movePlannerTask(second, null, null, null)
+    store.movePlannerTask(first, null, null, second)
+    store.movePlannerTask(third, '2026-09-26', null, null)
+    store.movePlannerTask(third, null, null, first)
+    const order = store.listPlanner('2026-09-26', '2026-09-26').tasks.filter((task) => task.plannedDate === null).map((task) => task.body)
+    assert.deepEqual(order, ['Third', 'First', 'Second'])
+  })
+})
+
+test('Inbox retrieval paginates without losing stable ordering', () => {
+  withStore((store) => {
+    for (let index = 0; index < 55; index++) store.submitCapture(randomUUID(), 0, 'Capture ' + index)
+    const firstPage = store.listInbox(undefined, 50)
+    const secondPage = store.listInbox(firstPage.nextCursor, 50)
+    assert.equal(firstPage.items.length, 50)
+    assert.equal(firstPage.total, 55)
+    assert.equal(secondPage.items.length, 5)
+    assert.equal(secondPage.nextCursor, null)
+    assert.equal(new Set([...firstPage.items, ...secondPage.items].map((item) => item.id)).size, 55)
+  })
+})
+
+test('tasks move from project backlog to Ready, a day, and back to Ready', () => {
+  withStore((store) => {
+    const project = store.createCategory('Client A')
+    const id = store.submitCapture(randomUUID(), 0, 'Prepare review')
+    store.classifyItem(id, 'task', ['Design'], project.id)
+    assert.equal(store.listBacklog().items[0].projectId, project.id)
+    const otherProject = store.createCategory('Client B')
+    store.setTaskProject(id, otherProject.id)
+    assert.equal(store.listBacklog().items[0].projectId, otherProject.id)
+    store.setTaskProject(id, project.id)
+    assert.equal(store.listPlanner('2026-09-26', '2026-09-28').tasks.length, 0)
+    store.setTaskReady(id)
+    assert.equal(store.listBacklog().total, 0)
+    assert.equal(store.listPlanner('2026-09-26', '2026-09-28').tasks[0].ready, true)
+    store.movePlannerTask(id, '2026-09-27', null, null)
+    assert.equal(store.listPlanner('2026-09-26', '2026-09-28').tasks[0].plannedDate, '2026-09-27')
+    store.setTaskReady(id)
+    assert.equal(store.listPlanner('2026-09-26', '2026-09-28').tasks[0].plannedDate, null)
+    assert.equal(store.listPlanner('2026-09-26', '2026-09-28').tasks[0].projectId, project.id)
+  })
+})
+
+test('task body and tags update atomically', () => {
+  withStore((store) => {
+    const id = captureTask(store, 'Before', ['old'])
+    const current = store.getNote(id)
+    store.db.exec("CREATE TRIGGER fail_tag_link BEFORE INSERT ON note_tags BEGIN SELECT RAISE(ABORT, 'forced tag failure'); END")
+    assert.throws(() => store.updateItem(id, current.revision, 'After', ['new']), /forced tag failure/)
+    assert.equal(store.getNote(id).body, 'Before')
+    assert.deepEqual(store.getNote(id).tags, ['old'])
+    store.db.exec('DROP TRIGGER fail_tag_link')
+    const updated = store.updateItem(id, current.revision, 'After', ['new'])
+    assert.equal(updated.body, 'After')
+    assert.deepEqual(updated.tags, ['new'])
+  })
+})
+
+test('all items support multi-type and multi-tag filters', () => {
+  withStore((store) => {
+    const workId = store.submitCapture(randomUUID(), 0, 'Project note')
+    store.classifyItem(workId, 'note', ['Work'])
+    const homeId = store.submitCapture(randomUUID(), 0, 'Personal note')
+    store.classifyItem(homeId, 'note', ['Home'])
+    const taskId = store.submitCapture(randomUUID(), 0, 'Project task')
+    store.classifyItem(taskId, 'task', ['Work'])
+    const inboxId = store.submitCapture(randomUUID(), 0, 'Unfiled thought')
+    assert.deepEqual(store.listTags(), ['Home', 'Work'])
+    const base = { query: '', scope: 'notes', sort: 'newest', limit: 50 }
+    assert.equal(store.listNotes(base).total, 4)
+    assert.deepEqual(store.listNotes({ ...base, kinds: ['note', 'task'], tags: ['work'] }).items.map((item) => item.id), [taskId, workId])
+    assert.deepEqual(store.listNotes({ ...base, tags: ['work', 'home'] }).items.map((item) => item.id), [taskId, homeId, workId])
+    assert.deepEqual(store.listNotes({ ...base, kinds: ['inbox'] }).items.map((item) => item.id), [inboxId])
+    assert.equal(store.listNotes({ ...base, kinds: [], tags: [] }).total, 4)
+  })
+})
+
+test('event and anchored-task updates roll back together on a database failure', () => {
+  withStore((store) => {
+    const start = new Date(2026, 8, 28, 10).getTime()
+    const end = new Date(2026, 8, 28, 11).getTime()
+    const meeting = store.savePlannerEvent({ title: 'Design review', startAt: start, endAt: end, allDay: false })
+    const id = captureTask(store, 'Prepare notes')
+    store.movePlannerTask(id, '2026-09-28', meeting.id, null)
+    store.db.exec("CREATE TRIGGER fail_anchor BEFORE UPDATE OF before_event_id ON notes WHEN NEW.before_event_id IS NULL BEGIN SELECT RAISE(ABORT, 'forced anchor failure'); END")
+    assert.throws(() => store.updatePlannerEvent({ id: meeting.id, title: 'Moved review', startAt: new Date(2026, 8, 29, 10).getTime(), endAt: new Date(2026, 8, 29, 11).getTime(), allDay: false }), /forced anchor failure/)
+    assert.equal(store.listPlanner('2026-09-28', '2026-09-29').events[0].startAt, start)
+    assert.equal(store.db.prepare('SELECT before_event_id FROM notes WHERE id=?').get(id).before_event_id, meeting.id)
+  })
+})
+
+test('undoing a meeting deletion restores its task anchors and order', () => {
+  withStore((store) => {
+    const day = '2026-09-28'
+    const meeting = store.savePlannerEvent({ title: 'Review', startAt: new Date(2026, 8, 28, 10).getTime(), endAt: new Date(2026, 8, 28, 11).getTime(), allDay: false })
+    const first = captureTask(store, 'First')
+    const second = captureTask(store, 'Second')
+    store.movePlannerTask(first, day, meeting.id, null)
+    store.movePlannerTask(second, day, meeting.id, null)
+    const snapshot = store.deletePlannerEvent(meeting.id)
+    assert.equal(store.listPlanner(day, day).events.length, 0)
+    assert.equal(store.getNote(first).kind, 'task')
+    assert.equal(store.db.prepare('SELECT before_event_id FROM notes WHERE id=?').get(first).before_event_id, null)
+    store.undoDeletePlannerEvent(snapshot)
+    assert.equal(store.listPlanner(day, day).events[0].id, meeting.id)
+    const restored = store.listPlanner(day, day).tasks.filter((task) => task.beforeEventId === meeting.id)
+    assert.deepEqual(restored.map((task) => task.id), [first, second])
+    assert.throws(() => store.undoDeletePlannerEvent(snapshot), /already been restored/i)
+  })
+})
+
+test('planner includes weekend and spanning meetings in each overlapping local day', () => {
+  withStore((store) => {
+    const saturday = localDateBounds('2026-09-26')
+    const sunday = localDateBounds('2026-09-27')
+    const meeting = store.savePlannerEvent({ title: 'Weekend handoff', startAt: saturday.start + 23 * 60 * 60_000, endAt: sunday.start + 60 * 60_000, allDay: false })
+    assert.equal(eventOverlapsLocalDay(meeting.startAt, meeting.endAt, '2026-09-26'), true)
+    assert.equal(eventOverlapsLocalDay(meeting.startAt, meeting.endAt, '2026-09-27'), true)
+    assert.equal(store.listPlanner('2026-09-26', '2026-09-26').events[0].id, meeting.id)
+    assert.equal(store.listPlanner('2026-09-27', '2026-09-27').events[0].id, meeting.id)
+  })
+})
+
+test('drop resolution handles unscheduled targets and inserts before or after a task', () => {
+  const tasks = [
+    { id: 'source', plannedDate: '2026-09-28', beforeEventId: null, position: 0 },
+    { id: 'unscheduled', plannedDate: null, beforeEventId: null, position: 0 },
+    { id: 'later', plannedDate: '2026-09-29', beforeEventId: null, position: 1 },
+    { id: 'target', plannedDate: '2026-09-29', beforeEventId: null, position: 0 },
+  ]
+  assert.deepEqual(resolvePlannerDrop('source', 'unscheduled', 0, tasks), { id: 'source', plannedDate: null, beforeEventId: null, beforeId: 'unscheduled' })
+  assert.deepEqual(resolvePlannerDrop('source', 'target', 10, tasks), { id: 'source', plannedDate: '2026-09-29', beforeEventId: null, beforeId: 'later' })
+  assert.deepEqual(resolvePlannerDrop('source', 'target', -10, tasks), { id: 'source', plannedDate: '2026-09-29', beforeEventId: null, beforeId: 'target' })
+})
+
+test('date bounds follow local daylight-saving day lengths', () => {
+  const spring = localDateBounds('2026-03-29')
+  const autumn = localDateBounds('2026-10-25')
+  assert.ok([23, 24].includes((spring.end - spring.start) / 3_600_000))
+  assert.ok([24, 25].includes((autumn.end - autumn.start) / 3_600_000))
+})
+
+test('version 2 database migrates with historical meeting labels intact', () => {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'notable-v2-'))
+  const file = path.join(folder, 'legacy.sqlite')
+  const legacy = new Database(file)
+  legacy.exec(`
+    CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
+    INSERT INTO schema_migrations VALUES(1,1),(2,2);
+    CREATE TABLE notes(id TEXT PRIMARY KEY,capture_request_id TEXT UNIQUE,body TEXT NOT NULL,meeting_id TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,deleted_at INTEGER,revision INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE meetings(id TEXT PRIMARY KEY,title TEXT NOT NULL,started_at INTEGER NOT NULL,ended_at INTEGER,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+    CREATE TABLE drafts(key TEXT PRIMARY KEY,body TEXT NOT NULL,meeting_id TEXT,generation INTEGER NOT NULL DEFAULT 0,revision INTEGER NOT NULL DEFAULT 0,updated_at INTEGER NOT NULL);
+    CREATE TABLE app_state(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+    CREATE INDEX notes_created ON notes(deleted_at,created_at DESC,id DESC);
+    CREATE INDEX notes_meeting_created ON notes(meeting_id,created_at DESC,id DESC);
+    CREATE VIRTUAL TABLE note_search USING fts5(note_id UNINDEXED,body,meeting_title,tokenize='unicode61 remove_diacritics 2');
+    INSERT INTO drafts(key,body,updated_at) VALUES('capture','',1);
+  `)
+  const meetingId = randomUUID(), noteId = randomUUID()
+  legacy.prepare('INSERT INTO meetings VALUES(?,?,?,?,?,?)').run(meetingId, 'Historical sync', 10, 20, 1, 2)
+  legacy.prepare('INSERT INTO notes(id,body,meeting_id,created_at,updated_at) VALUES(?,?,?,?,?)').run(noteId, 'Old note', meetingId, 10, 10)
+  legacy.close()
+  let store
+  try {
+    store = new Store(file)
+    assert.equal(store.legacyMeetingLabels()[0].title, 'Historical sync')
+    assert.equal(store.getNote(noteId).meetingTitle, 'Historical sync')
+    assert.equal(store.checkIntegrity(), undefined)
+  } finally { store?.close(); fs.rmSync(folder, { recursive: true, force: true }) }
+})
