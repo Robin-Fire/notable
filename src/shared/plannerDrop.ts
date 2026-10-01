@@ -24,7 +24,7 @@ export function resolvePlannerDrop(activeId: string, overId: string | null, delt
 
   const target = tasks.find((task) => task.id === overId)
   if (!target) return null
-  const slotTasks = tasks.filter((task) => task.id !== active.id && task.plannedDate === target.plannedDate && task.beforeEventId === target.beforeEventId).sort((a, b) => a.position - b.position)
+  const slotTasks = tasks.filter((task) => task.id !== active.id && task.completedAt == null && task.plannedDate === target.plannedDate && task.beforeEventId === target.beforeEventId).sort((a, b) => a.position - b.position)
   const targetIndex = slotTasks.findIndex((task) => task.id === target.id)
   const insertionIndex = targetIndex + (deltaY > 0 ? 1 : 0)
   const beforeId = slotTasks[insertionIndex]?.id ?? null

@@ -20,7 +20,7 @@ const api: Omit<NotiertApi, 'capture'> = {
   planner: {
     inbox: (input) => ipcRenderer.invoke('planner:inbox', input ?? {}), inboxCount: () => ipcRenderer.invoke('planner:inbox-count'), unfile: (id) => ipcRenderer.invoke('planner:unfile', id), classify: (input) => ipcRenderer.invoke('planner:classify', input),
     tasks: (from, to) => ipcRenderer.invoke('planner:tasks', { from, to }), move: (input) => ipcRenderer.invoke('planner:move', input),
-    backlog: (input) => ipcRenderer.invoke('planner:backlog', input ?? {}), setReady: (input) => ipcRenderer.invoke('planner:ready', input), reorderBacklog: (input) => ipcRenderer.invoke('planner:backlog-reorder', input),
+    backlog: (input) => ipcRenderer.invoke('planner:backlog', input ?? {}), setReady: (input) => ipcRenderer.invoke('planner:ready', input), setTaskCompleted: (input) => ipcRenderer.invoke('planner:complete', input), reorderBacklog: (input) => ipcRenderer.invoke('planner:backlog-reorder', input),
     createEvent: (input) => ipcRenderer.invoke('planner:event:create', input), updateEvent: (input) => ipcRenderer.invoke('planner:event:update', input),
     deleteEvent: (id) => ipcRenderer.invoke('planner:event:delete', id), undoDeleteEvent: (snapshot) => ipcRenderer.invoke('planner:event:undo-delete', snapshot),
     onChanged: (callback) => { const listener = (_event: Electron.IpcRendererEvent, seq: number) => callback(seq); ipcRenderer.on('planner:changed', listener); return () => ipcRenderer.removeListener('planner:changed', listener) },

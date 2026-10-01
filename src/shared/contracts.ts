@@ -7,12 +7,13 @@ export type CaptureImage = ImageRef & { dataUrl: string }
 export const NoteSchema = Z.object({
   id: Z.string(), body: Z.string(), meetingId: Z.string().nullable(), createdAt: Z.number(), updatedAt: Z.number(),
   deletedAt: Z.number().nullable(), revision: Z.number(), kind: Z.enum(['inbox', 'note', 'task']).default('note'),
-  processedAt: Z.number().nullable().default(null), categoryId: Z.string().nullable().default(null), tags: Z.array(Z.string()).default([]), images: Z.array(ImageRefSchema).default([]),
+  processedAt: Z.number().nullable().default(null), completedAt: Z.number().nullable().default(null), categoryId: Z.string().nullable().default(null), tags: Z.array(Z.string()).default([]), images: Z.array(ImageRefSchema).default([]),
 })
 export const PlannerEventSchema = Z.object({ id: Z.string(), title: Z.string(), startAt: Z.number(), endAt: Z.number(), allDay: Z.boolean() })
 export const PlannerTaskSchema = NoteSchema.extend({ meetingTitle: Z.string().nullable(), plannedDate: Z.string().nullable(), position: Z.number(), priorityPosition: Z.number().int().nonnegative(), beforeEventId: Z.string().nullable(), ready: Z.boolean() })
 export const ClassifyItemSchema = Z.object({ id: Z.string().uuid(), kind: Z.enum(['note', 'task']), tags: Z.array(Z.string().max(40)).max(20), categoryId: Z.string().uuid().nullable().optional() })
 export const PlannerReadySchema = Z.object({ id: Z.string().uuid() })
+export const PlannerCompleteSchema = Z.object({ id: Z.string().uuid(), completed: Z.boolean() })
 export const PlannerCategorySchema = Z.object({ id: Z.string().uuid(), categoryId: Z.string().uuid().nullable() })
 export const ItemCategorySchema = PlannerCategorySchema
 export const PlannerMoveSchema = Z.object({ id: Z.string().uuid(), plannedDate: Z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(), beforeEventId: Z.string().uuid().nullable(), beforeId: Z.string().uuid().nullable() })
@@ -41,7 +42,8 @@ export const NoteFilterSchema = Z.object({
   categoryId: Z.string().uuid().optional(),
   dateFrom: Z.number().optional(), dateTo: Z.number().optional(),
   kinds: Z.array(Z.enum(['inbox', 'note', 'task'])).max(3).optional(), tags: Z.array(Z.string().max(40)).max(10000).optional(),
-  cursor: Z.object({ sortAt: Z.number(), id: Z.string(), priorityPosition: Z.number().int().nonnegative().optional(), kindRank: Z.number().int().min(0).max(1).optional() }).optional(), limit: Z.number().int().min(1).max(100).default(50),
+  includeCompleted: Z.boolean().default(false),
+  cursor: Z.object({ sortAt: Z.number(), id: Z.string(), priorityPosition: Z.number().int().nonnegative().optional(), kindRank: Z.number().int().min(0).max(2).optional() }).optional(), limit: Z.number().int().min(1).max(100).default(50),
 })
 export const CaptureSubmitSchema = Z.object({ requestId: Z.string().uuid(), generation: Z.number().int().nonnegative(), body: Z.string().max(100000), categoryId: Z.string().uuid().nullable().optional() })
 export const NoteUpdateSchema = Z.object({ id: Z.string().uuid(), expectedRevision: Z.number().int(), body: Z.string().max(100000) })
@@ -116,6 +118,7 @@ export type NotiertApi = {
     tasks(from: string, to: string): Promise<ApiResult<{ tasks: PlannerTask[]; events: PlannerEvent[]; tags: string[] }>>
     backlog(input?: z.infer<typeof PlannerBacklogQuerySchema>): Promise<ApiResult<PlannerBacklogPage>>
     setReady(input: z.infer<typeof PlannerReadySchema>): Promise<ApiResult<void>>
+    setTaskCompleted(input: z.infer<typeof PlannerCompleteSchema>): Promise<ApiResult<void>>
     reorderBacklog(input: { id: string; categoryId: string | null; beforeId: string | null }): Promise<ApiResult<void>>
     move(input: z.infer<typeof PlannerMoveSchema>): Promise<ApiResult<void>>
     createEvent(input: z.infer<typeof PlannerEventInputSchema>): Promise<ApiResult<PlannerEvent>>

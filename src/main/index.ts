@@ -7,7 +7,7 @@ import os from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { Store } from './storage/database'
 import { SettingsStore } from './settings'
-import { CaptureSubmitSchema, CategoryNameSchema, ClassifyItemSchema, DeletedPlannerEventSchema, IdsSchema, InboxPageSchema, ItemCategorySchema, NoteFilterSchema, NoteUpdateSchema, PlannerBacklogQuerySchema, PlannerBacklogReorderSchema, PlannerEventInputSchema, PlannerMoveSchema, PlannerQuerySchema, PlannerReadySchema, SettingsSchema, TagNameSchema, TagUpdateSchema } from '../shared/contracts'
+import { CaptureSubmitSchema, CategoryNameSchema, ClassifyItemSchema, DeletedPlannerEventSchema, IdsSchema, InboxPageSchema, ItemCategorySchema, NoteFilterSchema, NoteUpdateSchema, PlannerBacklogQuerySchema, PlannerBacklogReorderSchema, PlannerCompleteSchema, PlannerEventInputSchema, PlannerMoveSchema, PlannerQuerySchema, PlannerReadySchema, SettingsSchema, TagNameSchema, TagUpdateSchema } from '../shared/contracts'
 import { AppError, messageOf } from '../shared/errors'
 
 // Reuse the original profile on upgrades; custom test profiles stay isolated.
@@ -330,7 +330,7 @@ function registerIpc() {
     if (response.response === 1) { db.permanentlyDelete(ids); broadcastChange() }
   })
   roleHandler('notes:empty-trash', 'notes', async () => {
-    const count = requireStore().listNotes({ query: '', scope: 'trash', sort: 'newest', limit: 1 }).total
+    const count = requireStore().listNotes({ query: '', scope: 'trash', sort: 'newest', includeCompleted: false, limit: 1 }).total
     if (!count) return
     const response = await dialog.showMessageBox(notesWindow!, { type: 'warning', buttons: ['Cancel', 'Empty trash'], defaultId: 0, cancelId: 0, title: 'Empty trash?', message: `Permanently delete all ${count} ${count === 1 ? 'note' : 'notes'} in Trash?`, detail: 'This cannot be undone. Independent backups may still contain them.' })
     if (response.response === 1) { requireStore().emptyTrash(); broadcastChange() }
@@ -343,6 +343,7 @@ function registerIpc() {
   roleHandler('planner:tasks', 'notes', (_event, raw) => { const input = PlannerQuerySchema.parse(raw); return requireStore().listPlanner(input.from, input.to) })
   roleHandler('planner:backlog', 'notes', (_event, raw) => { const input = PlannerBacklogQuerySchema.parse(raw ?? {}); return requireStore().listBacklog(input) })
   roleHandler('planner:ready', 'notes', (_event, raw) => { const input = PlannerReadySchema.parse(raw); requireStore().setTaskReady(input.id); broadcastChange('planner') })
+  roleHandler('planner:complete', 'notes', (_event, raw) => { const input = PlannerCompleteSchema.parse(raw); requireStore().setTaskCompleted(input.id, input.completed); broadcastChange() })
   roleHandler('planner:backlog-reorder', 'notes', (_event, raw) => { const input = PlannerBacklogReorderSchema.parse(raw); requireStore().reorderBacklog(input.id, input.categoryId, input.beforeId); broadcastChange() })
   roleHandler('planner:move', 'notes', (_event, raw) => { const input = PlannerMoveSchema.parse(raw); requireStore().movePlannerTask(input.id, input.plannedDate, input.beforeEventId, input.beforeId); broadcastChange('planner') })
   roleHandler('planner:event:create', 'notes', (_event, raw) => { const input = PlannerEventInputSchema.parse(raw); const event = requireStore().savePlannerEvent(input); broadcastChange('planner'); return event })

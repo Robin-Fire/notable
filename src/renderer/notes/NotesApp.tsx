@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
-import { Archive, ArrowLeft, ArrowRight, Check, ChevronDown, CircleHelp, Copy, Download, FileText, FolderKanban, FolderOpen, GripVertical, Hash, Info, Monitor, MoreHorizontal, Palette, Plus, Search, Settings as SettingsIcon, Shield, Sun, Trash2, Undo2, X, CalendarDays } from 'lucide-react'
+import { Archive, ArrowLeft, ArrowRight, Check, CheckCircle2, ChevronDown, CircleHelp, Copy, Download, FileText, FolderKanban, FolderOpen, GripVertical, Hash, Info, Monitor, MoreHorizontal, Palette, Plus, Search, Settings as SettingsIcon, Shield, Sun, Trash2, Undo2, X, CalendarDays } from 'lucide-react'
 import type { Category, Note, NoteFilter, NotePage, Settings, TagRecord } from '../../shared/contracts'
 import { localDateBounds, toLocalISODate } from '../../shared/plannerDates'
 import { InboxView } from '../inbox/InboxView'
@@ -48,6 +48,7 @@ export function NotesApp() {
   const [dateRange, setDateRange] = useState('all')
   const [kindFilters, setKindFilters] = useState<ItemKind[]>([])
   const [tagFilters, setTagFilters] = useState<string[]>([])
+  const [showCompleted, setShowCompleted] = useState(false)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [tagSearch, setTagSearch] = useState('')
   const activeFilterCount = kindFilters.length + tagFilters.length + (dateRange === 'all' ? 0 : 1)
@@ -120,8 +121,8 @@ export function NotesApp() {
     if (dateRange === 'custom') { dateFrom = startOfLocalDay(customFrom); dateTo = endOfLocalDay(customTo) }
     const scope = view === 'trash' ? 'trash' : 'notes'
     const selectedTag = tagRecords.find((tag) => tag.id === selectedTagId)
-    return { query: debouncedQuery, scope, dateFrom, dateTo, categoryId: view === 'category' ? selectedCategoryId ?? undefined : undefined, kinds: kindFilters.length ? kindFilters : undefined, tags: view === 'tag' ? [selectedTag?.name ?? '__missing_tag__'] : tagFilters.length ? tagFilters : undefined, limit: 50, sort: view === 'tag' || view === 'category' ? 'priority' : 'newest' }
-  }, [dateRange, customFrom, customTo, debouncedQuery, kindFilters, tagFilters, tagRecords, selectedTagId, selectedCategoryId, view])
+    return { query: debouncedQuery, scope, dateFrom, dateTo, categoryId: view === 'category' ? selectedCategoryId ?? undefined : undefined, kinds: kindFilters.length ? kindFilters : undefined, tags: view === 'tag' ? [selectedTag?.name ?? '__missing_tag__'] : tagFilters.length ? tagFilters : undefined, includeCompleted: scope === 'notes' && showCompleted, limit: 50, sort: view === 'tag' || view === 'category' ? 'priority' : 'newest' }
+  }, [dateRange, customFrom, customTo, debouncedQuery, kindFilters, tagFilters, tagRecords, selectedTagId, selectedCategoryId, showCompleted, view])
 
   const loadNotes = useCallback(async (nextCursor?: NotePage['nextCursor'], append = false) => {
     setLoading(true); setError('')
@@ -183,9 +184,9 @@ export function NotesApp() {
     catch (reason) { setError(reason instanceof Error ? reason.message : 'This note could not be opened.') }
   }
   function clearFilters() { setQuery(''); setDateRange('all'); setKindFilters([]); setTagFilters([]) }
-  function nav(next: ViewName) { requestLeaveRef.current(() => { setSelectedTagId(null); setSelectedCategoryId(null); setView(next); setDetailId(null); setFocusedId(null); setDetail(null); setSelected([]); clearFilters() }) }
-  function openTag(tag: TagRecord) { requestLeaveRef.current(() => { setSelectedTagId(tag.id); setSelectedCategoryId(null); setView('tag'); setDetailId(null); setDetail(null); setSelected([]); clearFilters() }) }
-  function openCategory(category: Category) { requestLeaveRef.current(() => { setSelectedCategoryId(category.id); setSelectedTagId(null); setView('category'); setDetailId(null); setFocusedId(null); setDetail(null); setSelected([]); clearFilters() }) }
+  function nav(next: ViewName) { requestLeaveRef.current(() => { setSelectedTagId(null); setSelectedCategoryId(null); setView(next); setShowCompleted(false); setDetailId(null); setFocusedId(null); setDetail(null); setSelected([]); clearFilters() }) }
+  function openTag(tag: TagRecord) { requestLeaveRef.current(() => { setSelectedTagId(tag.id); setSelectedCategoryId(null); setView('tag'); setShowCompleted(false); setDetailId(null); setDetail(null); setSelected([]); clearFilters() }) }
+  function openCategory(category: Category) { requestLeaveRef.current(() => { setSelectedCategoryId(category.id); setSelectedTagId(null); setView('category'); setShowCompleted(false); setDetailId(null); setFocusedId(null); setDetail(null); setSelected([]); clearFilters() }) }
   async function addCategory() {
     if (!categoryDraft.trim()) return
     try { const category = resultValue(await window.notiert.notes.createCategory(categoryDraft)); setCategoryDraft(''); setNewCategory(false); setCategoriesOpen(true); setExpandedCategories((current) => ({ ...current, [category.id]: true })); void loadTags() }
@@ -221,13 +222,20 @@ export function NotesApp() {
         let nextCursor: typeof cursor | null = cursor
         while (nextCursor && beforeId === null) {
           const nextPage: NotePage = resultValue(await window.notiert.notes.list({ ...filter, cursor: nextCursor }))
-          beforeId = nextPage.items.find((item) => item.kind === 'task' && item.categoryId === categoryId)?.id ?? null
+          beforeId = nextPage.items.find((item) => item.kind === 'task' && item.completedAt == null && item.categoryId === categoryId)?.id ?? null
           nextCursor = nextPage.nextCursor
         }
       }
       resultValue(await window.notiert.planner.reorderBacklog({ id, categoryId, beforeId })); await loadNotes()
     }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'To-do priority could not be saved.') }
+  }
+  async function setTaskCompleted(id: string, completed: boolean): Promise<boolean> {
+    try { resultValue(await window.notiert.planner.setTaskCompleted({ id, completed })); setError(''); setToast(completed ? 'To-do marked done' : 'To-do moved back to Backlog'); return true }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'To-do status could not be changed.'); return false }
+  }
+  async function toggleDetailCompletion() {
+    if (detail && await setTaskCompleted(detail.id, detail.completedAt == null)) { setDetailId(null); setDetail(null) }
   }
   async function trashSelected() {
     if (!selected.length) return
@@ -271,28 +279,30 @@ export function NotesApp() {
       <p>{hasFilters ? 'Try another phrase or clear the filters.' : view === 'tag' ? 'Items using this tag will appear here.' : view === 'category' ? 'Items assigned to this category will appear here, including items with no tag.' : view === 'trash' ? 'Deleted items stay here until you remove them permanently.' : `Press ${settings?.shortcut.replace('Control', 'Ctrl') ?? 'Ctrl+N'} from any app to capture an item.`}</p>
       {hasFilters ? <button className="button secondary" onClick={() => requestEditorLeave(clearFilters)}>Clear filters</button> : view === 'all' && <button className="button primary" onClick={() => window.notiert.windows.openCapture()}>Capture a thought <ArrowRight size={15} /></button>}
     </div>
-    const renderRow = (note: NoteDetail, sortable?: SortableRowProps) => <article ref={sortable?.ref} style={sortable?.style} key={note.id} data-note-id={note.id} className={`note-row ${sortable ? 'priority-note-row' : ''} ${detailId === note.id || focusedId === note.id ? 'is-active' : ''} ${selected.includes(note.id) ? 'is-selected' : ''}`}>
+    const renderRow = (note: NoteDetail, sortable?: SortableRowProps) => <article ref={sortable?.ref} style={sortable?.style} key={note.id} data-note-id={note.id} className={`note-row ${sortable ? 'priority-note-row' : ''} ${note.completedAt != null ? 'is-completed' : ''} ${detailId === note.id || focusedId === note.id ? 'is-active' : ''} ${selected.includes(note.id) ? 'is-selected' : ''}`}>
       {sortable && <button type="button" className="note-drag-handle" aria-label={`Reorder to-do ${note.body.trim() ? excerpt(note.body).slice(0, 80) : 'without a title'}`} title="Drag to change priority" {...sortable.attributes} {...sortable.listeners}><GripVertical size={14} /></button>}
+      {note.kind === 'task' && <input className="note-completion-toggle" type="checkbox" aria-label={`${note.completedAt != null ? 'Reopen' : 'Mark as done'} to-do: ${note.body.trim() ? excerpt(note.body).slice(0, 80) : 'without a title'}`} checked={note.completedAt != null} onChange={(event) => void setTaskCompleted(note.id, event.target.checked)} />}
       <button className="note-row-open" aria-label={`Open ${note.kind === 'note' ? 'note' : note.kind === 'task' ? 'to-do' : 'inbox item'} ${note.body.trim() ? excerpt(note.body).slice(0, 80) : note.images.length ? 'Image capture' : 'Empty item'}`} onClick={() => requestEditorLeave(() => void openNote(note.id))} onFocus={() => setFocusedId(note.id)}>
         <span className="note-preview">{note.body.trim() ? excerpt(note.body) : note.images.length ? 'Image capture' : 'Empty item'}</span>
-        <span className="note-meta"><time>{formatTime(view === 'trash' ? note.deletedAt ?? note.createdAt : note.createdAt)}</time><span className="note-kind-chip">{kindLabel(note.kind)}</span>{note.images.length > 0 && <span className="note-image-count">{note.images.length} {note.images.length === 1 ? 'image' : 'images'}</span>}{note.tags.map((tag) => <span className="note-tag-chip" key={tag} style={{ color: tagRecords.find((record) => record.name.toLocaleLowerCase() === tag.toLocaleLowerCase())?.color }}>{tag}</span>)}</span>
+        <span className="note-meta"><time>{formatTime(view === 'trash' ? note.deletedAt ?? note.createdAt : note.createdAt)}</time><span className="note-kind-chip">{kindLabel(note.kind)}</span>{note.completedAt != null && <span className="note-completed-chip">Done</span>}{note.images.length > 0 && <span className="note-image-count">{note.images.length} {note.images.length === 1 ? 'image' : 'images'}</span>}{note.tags.map((tag) => <span className="note-tag-chip" key={tag} style={{ color: tagRecords.find((record) => record.name.toLocaleLowerCase() === tag.toLocaleLowerCase())?.color }}>{tag}</span>)}</span>
       </button>
       <input className="row-select" type="checkbox" aria-label="Select item" checked={selected.includes(note.id)} onChange={() => toggleSelected(note.id)} />
     </article>
 
     if (view === 'category' || view === 'tag') {
       const taskGroups = new Map<string, NoteDetail[]>()
-      notes.filter((note) => note.kind === 'task').forEach((task) => {
+      notes.filter((note) => note.kind === 'task' && note.completedAt == null).forEach((task) => {
         const key = task.categoryId ?? 'unassigned'
         taskGroups.set(key, [...(taskGroups.get(key) ?? []), task])
       })
       const priorityGroups = [...taskGroups.entries()].map(([categoryId, tasks]) => <PriorityTaskGroup key={categoryId} categoryId={categoryId === 'unassigned' ? null : categoryId} title={view === 'category' ? 'To-dos' : (categories.find((category) => category.id === categoryId)?.name ?? 'Unassigned')} tasks={tasks} renderRow={renderRow} onReorder={reorderTask} />)
+      const completedTasks = notes.filter((note) => note.kind === 'task' && note.completedAt != null).sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0))
       const otherItems = notes.filter((note) => note.kind !== 'task')
       const noTagItems = view === 'category' ? otherItems.filter((note) => note.tags.length === 0) : []
       const taggedItems = view === 'category' ? otherItems.filter((note) => note.tags.length > 0) : otherItems
       const groupedItems = new Map<string, NoteDetail[]>()
       for (const note of taggedItems) { const label = noteDateLabel(note.createdAt); groupedItems.set(label, [...(groupedItems.get(label) ?? []), note]) }
-      return <>{priorityGroups}{view === 'category' && noTagItems.length > 0 && <section className="category-item-section"><div className="date-label">No tag</div>{noTagItems.map((note) => renderRow(note))}</section>}{view === 'category' && taggedItems.length > 0 && <div className="date-label category-tagged-heading">Tagged items</div>}{[...groupedItems.entries()].map(([label, items]) => <section className="date-group" key={label}><div className="date-label">{label}</div>{items.map((note) => renderRow(note))}</section>)}{cursor && <button className="load-more" onClick={() => void loadNotes(cursor, true)} disabled={loading}>Load more <ChevronDown size={14} /></button>}</>
+      return <>{priorityGroups}{completedTasks.length > 0 && <section className="completed-task-group"><div className="date-label">Completed to-dos</div>{completedTasks.map((note) => renderRow(note))}</section>}{view === 'category' && noTagItems.length > 0 && <section className="category-item-section"><div className="date-label">No tag</div>{noTagItems.map((note) => renderRow(note))}</section>}{view === 'category' && taggedItems.length > 0 && <div className="date-label category-tagged-heading">Tagged items</div>}{[...groupedItems.entries()].map(([label, items]) => <section className="date-group" key={label}><div className="date-label">{label}</div>{items.map((note) => renderRow(note))}</section>)}{cursor && <button className="load-more" onClick={() => void loadNotes(cursor, true)} disabled={loading}>Load more <ChevronDown size={14} /></button>}</>
     }
 
     const groups = new Map<string, NoteDetail[]>()
@@ -351,7 +361,7 @@ export function NotesApp() {
     </aside>
     <main className="main-area">
       {view === 'settings' ? <SettingsPanel settings={settings} displays={displays} saveSettings={saveSettings} onBackup={async () => { try { resultValue(await window.notiert.data.backup()); setToast('Backup created') } catch (reason) { setError(reason instanceof Error ? reason.message : 'Backup failed.') } }} onRestore={async () => { try { resultValue(await window.notiert.data.restore()); setToast('Backup restored') } catch (reason) { setError(reason instanceof Error ? reason.message : 'Restore failed.') } }} firstRun={firstRun} onFinish={finishFirstRun} onTrayOnly={continueTrayOnly} recordingShortcut={recordingShortcut} setRecordingShortcut={setRecordingShortcut} onShortcutKey={onShortcutKey} />
-      : view === 'inbox' ? <InboxView onOpen={(id) => requestEditorLeave(() => { setView('all'); setSelectedCategoryId(null); setSelectedTagId(null); clearFilters(); setDetailId(id); setSelected([]); void openNote(id) })} />
+      : view === 'inbox' ? <InboxView onOpen={(id) => requestEditorLeave(() => { setView('all'); setSelectedCategoryId(null); setSelectedTagId(null); setShowCompleted(false); clearFilters(); setDetailId(id); setSelected([]); void openNote(id) })} />
       : view === 'calenban' ? <CalenbanView />
       : view === 'backlog' ? <BacklogView />
       : <>
@@ -370,6 +380,7 @@ export function NotesApp() {
         <div className="toolbar">
           <label className="search-box"><Search size={15} /><input ref={searchRef} value={query} onChange={(event) => requestEditorLeave(() => setQuery(event.target.value))} placeholder="Search items…" aria-label="Search items" /><kbd>Ctrl F</kbd>{query && <button title="Clear search" onClick={() => requestEditorLeave(() => setQuery(''))}><X size={13} /></button>}</label>
           {dateRange === 'custom' && <div className="date-inputs"><input type="date" aria-label="From date" value={customFrom} onChange={(event) => requestEditorLeave(() => setCustomFrom(event.target.value))} /><span>to</span><input type="date" aria-label="To date" value={customTo} onChange={(event) => requestEditorLeave(() => setCustomTo(event.target.value))} /></div>}
+          {view !== 'trash' && <button type="button" className={`button secondary small completed-toggle ${showCompleted ? 'is-active' : ''}`} aria-pressed={showCompleted} onClick={() => requestEditorLeave(() => setShowCompleted((current) => !current))}><CheckCircle2 size={14} /> Show completed</button>}
           <button className="button secondary small filter-toggle" aria-expanded={filtersOpen} aria-controls="note-filters" onClick={() => setFiltersOpen(!filtersOpen)}>Filters{activeFilterCount > 0 && <span className="filter-count">{activeFilterCount}</span>}<ChevronDown size={13} /></button>
           <span className="result-count">{total.toLocaleString()} {total === 1 ? 'item' : 'items'}</span>
         </div>
@@ -387,7 +398,7 @@ export function NotesApp() {
           {detailId && <section className="detail-panel" aria-label="Note details">
             <div className="detail-top"><button className="back-button" onClick={() => requestEditorLeave(() => { setDetailId(null); setDetail(null) })}><ArrowLeft size={15} /> <span>Back</span></button><div className="detail-actions">{!editing ? <><button className="icon-button" title="Copy note" aria-label="Copy note" onClick={() => void copyIds([detailId])}><Copy size={15} /></button>{view === 'trash' ? <><button className="icon-button" title="Restore note" aria-label="Restore note" onClick={() => void restoreOne(detailId)}><Undo2 size={15} /></button><button className="icon-button danger-icon" title="Delete permanently" aria-label="Delete permanently" onClick={() => void deleteOne(detailId)}><Trash2 size={15} /></button></> : <button className="icon-button danger-icon" title="Move to Trash" aria-label="Move to Trash" onClick={() => void trashSelectedFromDetail(detailId, window.notiert, setToast, setError, setDetailId, setDetail)}><Trash2 size={15} /></button>}</> : <><button className="button secondary small" onClick={() => hasEdits ? setDiscardPrompt(true) : setEditing(false)}>Cancel</button><button className="button primary small" onClick={() => void saveEdit()}><Check size={14} /> Save</button></>}</div></div>
             {!detail ? <div className="detail-loading"><span className="spinner" /></div> : <>
-              <div className="detail-meta"><span>{formatDateTime(detail.createdAt)}</span>{detail.updatedAt !== detail.createdAt && <span>Edited {formatDateTime(detail.updatedAt)}</span>}</div>
+              <div className="detail-meta"><span>{formatDateTime(detail.createdAt)}</span>{detail.updatedAt !== detail.createdAt && <span>Edited {formatDateTime(detail.updatedAt)}</span>}{detail.completedAt != null && <span className="detail-completed-at">Done {formatDateTime(detail.completedAt)}</span>}{detail.kind === 'task' && view !== 'trash' && !editing && <button type="button" className="detail-completion-action" onClick={() => void toggleDetailCompletion()}><CheckCircle2 size={13} /> {detail.completedAt != null ? 'Reopen to Backlog' : 'Mark as done'}</button>}</div>
               {editing ? <><textarea className="note-editor" value={editText} onChange={(event) => setEditText(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); if (hasEdits) setDiscardPrompt(true); else setEditing(false) } }} aria-label="Edit item" /><label className="detail-category-select">Category <select aria-label="Item category" value={editCategoryId ?? ''} onChange={(event) => setEditCategoryId(event.target.value || null)}><option value="">Unassigned</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><div className="detail-tags"><span className="tags-field-label">Tags</span><TagEditor tags={editTags} draft={tagDraft} onTagsChange={setEditTags} onDraftChange={setTagDraft} suggestions={availableTags} /></div></> : <div className="detail-note-text">{detail.body || (detail.images.length ? null : <span className="muted">Empty item</span>)}</div>}
               <ItemImages images={detail.images} />
               {editing ? <div className="editor-bottom"><span>{[...editText].length.toLocaleString()} / 50,000</span></div> : <><div className="detail-tags"><span className="tags-field-label">Category</span><span className="detail-tag-list">{categories.find((category) => category.id === detail.categoryId)?.name ?? 'Unassigned'}</span></div><div className="detail-tags"><span className="tags-field-label">Tags</span><span className="detail-tag-list">{detail.tags.length ? detail.tags.map((tag) => <span className="note-tag-chip" key={tag} style={{ color: tagRecords.find((record) => record.name.toLocaleLowerCase() === tag.toLocaleLowerCase())?.color }}>{tag}</span>) : 'No tags'}</span></div>{view !== 'trash' && <button className="button secondary edit-button" onClick={() => { setEditing(true); setEditText(detail.body); setEditTags(detail.tags); setEditCategoryId(detail.categoryId); setTagDraft('') }}>Edit item <ArrowRight size={14} /></button>}</>}

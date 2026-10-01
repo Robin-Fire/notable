@@ -18,11 +18,12 @@ export function MeetingRow({ event, events, day, onEdit, onDelete }: { event: Pl
   </article>
 }
 
-export function PlannerTaskCard({ task, days, onDelete, onOpen }: {
+export function PlannerTaskCard({ task, days, onDelete, onOpen, onComplete }: {
   task: PlannerTask
   days: string[]
   onDelete: (id: string) => void
   onOpen: (task: PlannerTask) => void
+  onComplete: (id: string, completed: boolean) => void
 }) {
   const title = task.body.split('\n').find((line) => line.trim())?.trim() || (task.images.length ? 'Image to-do' : 'Untitled task')
   const rest = task.body.split('\n').slice(1).join(' ').trim()
@@ -35,9 +36,11 @@ export function PlannerTaskCard({ task, days, onDelete, onOpen }: {
     {task.images.length > 0 && <span className="planner-image-count">{task.images.length} {task.images.length === 1 ? 'image' : 'images'}</span>}
     {task.plannedDate && task.plannedDate < (days[0] ?? '') && <span className="past-due-label">Past plan</span>}
   </div>
-  return <KanbanItem id={task.id}><div className="planner-task-card">
-    <KanbanItemHandle label={'Drag ' + title + ' to another day'}>⠿</KanbanItemHandle>
+  const content = <div className={`planner-task-card ${task.completedAt != null ? 'is-completed' : ''}`}>
+    <input className="planner-task-completion" type="checkbox" aria-label={`${task.completedAt != null ? 'Reopen' : 'Mark as done'} to-do: ${title}`} checked={task.completedAt != null} onChange={(event) => onComplete(task.id, event.target.checked)} />
+    {task.completedAt == null ? <KanbanItemHandle label={'Drag ' + title + ' to another day'}>⠿</KanbanItemHandle> : <span className="planner-task-drag-spacer" aria-hidden="true" />}
     {copy}
     {menu}
-  </div></KanbanItem>
+  </div>
+  return task.completedAt != null ? <article className="planner-task-static" data-task-id={task.id}>{content}</article> : <KanbanItem id={task.id}>{content}</KanbanItem>
 }

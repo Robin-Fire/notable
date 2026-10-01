@@ -8,8 +8,8 @@ type Item = (Note & { meetingTitle: null }) | PlannerTask
 const now = Date.now()
 const initialCategories: Category[] = [{ id: '11111111-1111-4111-8111-111111111111', name: 'Work' }, { id: '22222222-2222-4222-8222-222222222222', name: 'Personal' }]
 const sample: Item[] = [
-  { id: '14141414-1414-4414-8414-141414141414', body: 'Ideas for the next release\nKeep the capture flow quick and calm.', meetingId: null, meetingTitle: null, createdAt: now, updatedAt: now, deletedAt: null, revision: 1, kind: 'note', processedAt: now, categoryId: initialCategories[0]!.id, tags: ['Planning', 'Ideas'], images: [] },
-  { id: '15151515-1515-4515-8515-151515151515', body: 'A thought to file later', meetingId: null, meetingTitle: null, createdAt: now, updatedAt: now, deletedAt: null, revision: 1, kind: 'inbox', processedAt: null, categoryId: null, tags: [], images: [] },
+  { id: '14141414-1414-4414-8414-141414141414', body: 'Ideas for the next release\nKeep the capture flow quick and calm.', meetingId: null, meetingTitle: null, createdAt: now, updatedAt: now, deletedAt: null, revision: 1, kind: 'note', processedAt: now, completedAt: null, categoryId: initialCategories[0]!.id, tags: ['Planning', 'Ideas'], images: [] },
+  { id: '15151515-1515-4515-8515-151515151515', body: 'A thought to file later', meetingId: null, meetingTitle: null, createdAt: now, updatedAt: now, deletedAt: null, revision: 1, kind: 'inbox', processedAt: null, completedAt: null, categoryId: null, tags: [], images: [] },
 ]
 const initialTags: TagRecord[] = [
   { id: '33333333-3333-4333-8333-333333333333', name: 'Planning', categoryId: initialCategories[0]!.id, color: '#2563eb', count: 0 },
@@ -18,7 +18,7 @@ const initialTags: TagRecord[] = [
 ]
 const stored = (() => { try { return JSON.parse(localStorage.getItem('notiert-browser-preview') ?? localStorage.getItem('notable-browser-preview') ?? 'null') as { items: Item[]; categories: Category[]; tags: TagRecord[]; events?: PlannerEvent[] } | null } catch { return null } })()
 let items = stored?.items ?? sample
-items = items.map((item) => ({ ...item, categoryId: 'categoryId' in item ? item.categoryId : null })).map((item) => item.kind === 'task' ? { ...item, priorityPosition: 'priorityPosition' in item ? item.priorityPosition : 0, ready: 'ready' in item ? item.ready : Boolean('plannedDate' in item && item.plannedDate), position: 'position' in item ? item.position : 0, beforeEventId: 'beforeEventId' in item ? item.beforeEventId : null } as PlannerTask : item)
+items = items.map((item) => ({ ...item, completedAt: 'completedAt' in item ? item.completedAt : null, categoryId: 'categoryId' in item ? item.categoryId : null })).map((item) => item.kind === 'task' ? { ...item, priorityPosition: 'priorityPosition' in item ? item.priorityPosition : 0, ready: 'ready' in item ? item.ready : Boolean('plannedDate' in item && item.plannedDate), position: 'position' in item ? item.position : 0, beforeEventId: 'beforeEventId' in item ? item.beforeEventId : null } as PlannerTask : item)
 let events: PlannerEvent[] = stored?.events ?? []
 const categories = stored?.categories ?? initialCategories
 const tags = stored?.tags ?? initialTags
@@ -28,7 +28,8 @@ const changed = () => { localStorage.setItem('notiert-browser-preview', JSON.str
 const ok = <T,>(value: T) => Promise.resolve({ ok: true as const, value })
 const visible = () => items.filter((item) => item.deletedAt === null)
 const tagList = () => tags.map((tag) => ({ ...tag, count: visible().filter((item) => item.tags.includes(tag.name)).length }))
-const plannerTasks = () => visible().filter((item): item is PlannerTask => item.kind === 'task' && 'plannedDate' in item && (!('status' in item) || item.status === 'open'))
+const plannerTasks = () => visible().filter((item): item is PlannerTask => item.kind === 'task' && 'plannedDate' in item && item.completedAt === null)
+const allPlannerTasks = () => visible().filter((item): item is PlannerTask => item.kind === 'task' && 'plannedDate' in item)
 const nextPriority = (categoryId: string | null) => Math.max(-1, ...plannerTasks().filter((task) => task.categoryId === categoryId).map((task) => task.priorityPosition)) + 1
 const assignCategory = (item: Item, categoryId: string | null) => {
   if (item.categoryId === categoryId) return
@@ -51,9 +52,9 @@ const settings = { shortcut: 'Control+N', shortcutEnabled: true, shortcutRegiste
 
 const api = {
   updates: { getStatus: () => ok({ status: 'idle' as const }), check: () => ok(undefined), install: () => ok(undefined), onChanged: () => () => {} },
-  capture: { submit: ({ body, categoryId }: { body: string; categoryId?: string | null }) => { const id = crypto.randomUUID(); items = [{ id, body, meetingId: null, meetingTitle: null, createdAt: Date.now(), updatedAt: Date.now(), deletedAt: null, revision: 1, kind: 'inbox', processedAt: null, categoryId: categoryId ?? null, tags: [], images: [] }, ...items]; changed(); return ok({ id }) } },
+  capture: { submit: ({ body, categoryId }: { body: string; categoryId?: string | null }) => { const id = crypto.randomUUID(); items = [{ id, body, meetingId: null, meetingTitle: null, createdAt: Date.now(), updatedAt: Date.now(), deletedAt: null, revision: 1, kind: 'inbox', processedAt: null, completedAt: null, categoryId: categoryId ?? null, tags: [], images: [] }, ...items]; changed(); return ok({ id }) } },
   notes: {
-    list: (filter: { scope: 'notes' | 'trash'; tags?: string[]; kinds?: string[]; query?: string; categoryId?: string; sort?: string }) => { const found = items.filter((item) => (filter.scope === 'trash' ? item.deletedAt !== null : item.deletedAt === null) && (!filter.categoryId || item.categoryId === filter.categoryId) && (!filter.tags?.length || filter.tags.some((tag) => item.tags.includes(tag))) && (!filter.kinds?.length || filter.kinds.includes(item.kind)) && (!filter.query || item.body.toLowerCase().includes(filter.query.toLowerCase()))); if (filter.sort === 'priority') found.sort((a, b) => (a.kind === 'task' ? 0 : 1) - (b.kind === 'task' ? 0 : 1) || (a.kind === 'task' && b.kind === 'task' ? (a as PlannerTask).priorityPosition - (b as PlannerTask).priorityPosition : b.createdAt - a.createdAt)); return ok({ items: found, nextCursor: null, total: found.length }) },
+    list: (filter: { scope: 'notes' | 'trash'; tags?: string[]; kinds?: string[]; query?: string; categoryId?: string; sort?: string; includeCompleted?: boolean }) => { const found = items.filter((item) => (filter.scope === 'trash' ? item.deletedAt !== null : item.deletedAt === null && (filter.includeCompleted || item.completedAt === null)) && (!filter.categoryId || item.categoryId === filter.categoryId) && (!filter.tags?.length || filter.tags.some((tag) => item.tags.includes(tag))) && (!filter.kinds?.length || filter.kinds.includes(item.kind)) && (!filter.query || item.body.toLowerCase().includes(filter.query.toLowerCase()))); if (filter.sort === 'priority') found.sort((a, b) => (a.kind === 'task' ? (a.completedAt === null ? 0 : 1) : 2) - (b.kind === 'task' ? (b.completedAt === null ? 0 : 1) : 2) || (a.kind === 'task' && b.kind === 'task' ? (a as PlannerTask).priorityPosition - (b as PlannerTask).priorityPosition : b.createdAt - a.createdAt)); return ok({ items: found, nextCursor: null, total: found.length }) },
     tags: () => ok(tags.map((tag) => tag.name)), taxonomy: () => ok({ categories: [...categories], tags: tagList() }),
     createCategory: (name: string) => { const category = { id: crypto.randomUUID(), name }; categories.push(category); changed(); return ok(category) },
     createTag: ({ name, categoryId }: { name: string; categoryId: string | null }) => { const tag = { id: crypto.randomUUID(), name, categoryId, color: '#85858e', count: 0 }; tags.push(tag); changed(); return ok(tag) },
@@ -73,7 +74,7 @@ const api = {
     inboxCount: () => ok(visible().filter((item) => item.kind === 'inbox').length),
     unfile: (id: string) => { const item = items.find((entry) => entry.id === id); if (item) item.kind = 'inbox'; changed(); return ok(undefined) },
     classify: ({ id, kind, tags: names, categoryId }: { id: string; kind: 'note' | 'task'; tags: string[]; categoryId?: string | null }) => { const item = items.find((entry) => entry.id === id); if (item) { const effectiveCategory = categoryId === undefined ? item.categoryId : categoryId; Object.assign(item, { kind, tags: names, categoryId: effectiveCategory, processedAt: Date.now(), ...(kind === 'task' ? { plannedDate: null, beforeEventId: null, position: visible().filter((entry) => entry.kind === 'task').length, priorityPosition: nextPriority(effectiveCategory), ready: false } : {}) }) }; for (const name of names) if (!tags.some((tag) => tag.name.toLowerCase() === name.toLowerCase())) tags.push({ id: crypto.randomUUID(), name, categoryId: categoryId ?? null, color: '#85858e', count: 0 }); changed(); return ok(undefined) },
-    tasks: (from: string, to: string) => ok({ tasks: plannerTasks().filter((task) => task.plannedDate ? task.plannedDate < from || task.plannedDate <= to : task.ready).sort((a, b) => (a.plannedDate ?? '').localeCompare(b.plannedDate ?? '') || (a.beforeEventId ?? '').localeCompare(b.beforeEventId ?? '') || a.position - b.position || a.createdAt - b.createdAt), events: events.filter((event) => event.startAt < localDateBounds(to).end && event.endAt > localDateBounds(from).start).sort((a, b) => a.startAt - b.startAt), tags: tags.map((tag) => tag.name) }),
+    tasks: (from: string, to: string) => { const open = plannerTasks().filter((task) => task.plannedDate ? task.plannedDate < from || task.plannedDate <= to : task.ready); const done = allPlannerTasks().filter((task) => task.completedAt != null && task.plannedDate !== null && task.plannedDate >= from && task.plannedDate <= to); return ok({ tasks: [...open, ...done].sort((a, b) => (a.plannedDate ?? '').localeCompare(b.plannedDate ?? '') || (a.beforeEventId ?? '').localeCompare(b.beforeEventId ?? '') || Number(a.completedAt != null) - Number(b.completedAt != null) || a.position - b.position || a.createdAt - b.createdAt), events: events.filter((event) => event.startAt < localDateBounds(to).end && event.endAt > localDateBounds(from).start).sort((a, b) => a.startAt - b.startAt), tags: tags.map((tag) => tag.name) }) },
     backlog: ({ categoryId = null, query = '', tagNames, includeUntagged, cursor, limit = 50 }: { categoryId?: string | null; query?: string; tagNames?: string[]; includeUntagged?: boolean; cursor?: { priorityPosition: number; id: string }; limit?: number } = {}) => {
       const normalized = query.trim().toLocaleLowerCase()
       const hasTagFilter = tagNames !== undefined || includeUntagged !== undefined
@@ -87,6 +88,14 @@ const api = {
     setReady: ({ id }: { id: string }) => {
       const task = items.find((item) => item.id === id && item.kind === 'task') as PlannerTask | undefined
       if (task) { task.position = Math.max(-1, ...readyTasks().filter((entry) => entry.id !== id).map((entry) => entry.position)) + 1; task.ready = true; task.plannedDate = null; task.beforeEventId = null }
+      changed(); return ok(undefined)
+    },
+    setTaskCompleted: ({ id, completed }: { id: string; completed: boolean }) => {
+      const task = allPlannerTasks().find((entry) => entry.id === id)
+      if (task && (task.completedAt === null) !== completed) {
+        if (completed) { task.completedAt = Date.now(); task.ready = false }
+        else { task.completedAt = null; task.priorityPosition = nextPriority(task.categoryId); task.plannedDate = null; task.beforeEventId = null; task.ready = false; task.position = 0 }
+      }
       changed(); return ok(undefined)
     },
     reorderBacklog: ({ id, categoryId, beforeId }: { id: string; categoryId: string | null; beforeId: string | null }) => {

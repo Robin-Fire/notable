@@ -45,7 +45,7 @@ export function CalenbanView() {
   }, [deletedEvent])
 
   const unscheduled = tasks.filter((task) => task.plannedDate === null)
-  const overdue = tasks.filter((task) => task.plannedDate !== null && task.plannedDate < days[0]!)
+  const overdue = tasks.filter((task) => task.completedAt == null && task.plannedDate !== null && task.plannedDate < days[0]!)
   const eventById = useMemo(() => new Map(events.map((event) => [event.id, event])), [events])
   const tasksBySlot = useMemo(() => {
     const slots = new Map<string, PlannerTask[]>()
@@ -56,7 +56,7 @@ export function CalenbanView() {
       const key = `${task.plannedDate}\u0000${visibleAnchor ?? ''}`
       slots.set(key, [...(slots.get(key) ?? []), task])
     }
-    for (const list of slots.values()) list.sort((left, right) => left.position - right.position)
+    for (const list of slots.values()) list.sort((left, right) => Number(left.completedAt != null) - Number(right.completedAt != null) || left.position - right.position)
     return slots
   }, [eventById, tasks])
   const eventsByDay = useMemo(() => {
@@ -116,6 +116,10 @@ export function CalenbanView() {
     try { getValue(await window.notiert.notes.trash([id])); setMutationError(''); setDetailTask((task) => task?.id === id ? null : task) }
     catch (reason) { setMutationError(reason instanceof Error ? reason.message : 'The task could not be deleted.') }
   }
+  async function completeTask(id: string, completed: boolean) {
+    try { getValue(await window.notiert.planner.setTaskCompleted({ id, completed })); setMutationError(''); setDetailTask((task) => task?.id === id ? null : task) }
+    catch (reason) { setMutationError(reason instanceof Error ? reason.message : 'To-do status could not be changed.') }
+  }
   const laneTasks = (day: string, eventId: string | null) => tasksBySlot.get(`${day}\u0000${eventId ?? ''}`) ?? []
 
   return <section className="calenban-page">
@@ -143,10 +147,10 @@ export function CalenbanView() {
     {(mutationError || loadError) && <div className="inline-error" role="alert"><Info size={15} /><span>{mutationError || loadError}</span><button onClick={() => { setMutationError(''); void refresh() }}>Reload</button></div>}
     {loading && !tasks.length && !events.length ? <div className="loading-state"><span className="spinner" /> Loading your plan…</div> : <>
       <Kanban onMove={onDrop} overlay={(id) => { const task = tasks.find((item) => item.id === id); return task ? <div className="task-overlay">{task.body.split('\n')[0] || 'Untitled task'}</div> : null }}>
-        {overdue.length > 0 && <div className={`overdue-tray ${showOverdue ? '' : 'is-collapsed'}`}><div className="overdue-heading"><b>Past plan</b><span>{overdue.length} open {overdue.length === 1 ? 'task' : 'tasks'}{showOverdue ? ' · drag onto a day to reschedule' : ''}</span><button type="button" aria-expanded={showOverdue} onClick={() => setShowOverdue((visible) => !visible)}><ChevronDown size={13} /> {showOverdue ? 'Hide' : 'Show tasks'}</button></div>{showOverdue && <KanbanColumnContent id="lane:overdue" items={overdue.map((task) => task.id)}><div className="overdue-cards">{overdue.map((task) => <PlannerTaskCard key={task.id} task={task} days={days} onDelete={deleteTask} onOpen={setDetailTask} />)}</div></KanbanColumnContent>}</div>}
+        {overdue.length > 0 && <div className={`overdue-tray ${showOverdue ? '' : 'is-collapsed'}`}><div className="overdue-heading"><b>Past plan</b><span>{overdue.length} open {overdue.length === 1 ? 'task' : 'tasks'}{showOverdue ? ' · drag onto a day to reschedule' : ''}</span><button type="button" aria-expanded={showOverdue} onClick={() => setShowOverdue((visible) => !visible)}><ChevronDown size={13} /> {showOverdue ? 'Hide' : 'Show tasks'}</button></div>{showOverdue && <KanbanColumnContent id="lane:overdue" items={overdue.map((task) => task.id)}><div className="overdue-cards">{overdue.map((task) => <PlannerTaskCard key={task.id} task={task} days={days} onDelete={deleteTask} onOpen={setDetailTask} onComplete={completeTask} />)}</div></KanbanColumnContent>}</div>}
         <div className={`calenban-workspace ${showTray ? '' : 'without-tray'} mode-${mode}`}>
-          {showTray && <UnscheduledPane tasks={unscheduled} days={days} onDeleteTask={deleteTask} onOpen={setDetailTask} />}
-          <KanbanBoard>{days.map((day) => <PlannerDayColumn key={day} day={day} today={today} days={days} dayEvents={eventsByDay.get(day) ?? []} laneTasks={laneTasks} onDeleteTask={deleteTask} onOpen={setDetailTask} onEditMeeting={setEventDialog} onDeleteMeeting={removeEvent} onAddMeeting={startNewEvent} />)}</KanbanBoard>
+          {showTray && <UnscheduledPane tasks={unscheduled} days={days} onDeleteTask={deleteTask} onOpen={setDetailTask} onCompleteTask={completeTask} />}
+          <KanbanBoard>{days.map((day) => <PlannerDayColumn key={day} day={day} today={today} days={days} dayEvents={eventsByDay.get(day) ?? []} laneTasks={laneTasks} onDeleteTask={deleteTask} onOpen={setDetailTask} onCompleteTask={completeTask} onEditMeeting={setEventDialog} onDeleteMeeting={removeEvent} onAddMeeting={startNewEvent} />)}</KanbanBoard>
         </div>
       </Kanban>
     </>}

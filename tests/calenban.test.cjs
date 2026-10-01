@@ -177,7 +177,7 @@ test('v7 migration assigns direct categories only from unambiguous legacy tags a
     store.db.prepare('UPDATE notes SET created_at=100 WHERE id=?').run(newest)
     store.db.prepare('UPDATE notes SET created_at=50 WHERE id=?').run(older)
 
-    store.db.exec('DROP INDEX notes_backlog_priority; ALTER TABLE notes DROP COLUMN backlog_position; ALTER TABLE drafts DROP COLUMN category_id; DELETE FROM schema_migrations WHERE version=8;')
+    store.db.exec('DROP INDEX notes_backlog_priority; ALTER TABLE notes DROP COLUMN backlog_position; ALTER TABLE drafts DROP COLUMN category_id; DELETE FROM schema_migrations WHERE version>=8;')
     store.close()
     store = new Store(file)
 

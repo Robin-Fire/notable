@@ -148,7 +148,10 @@ function BacklogCategoryGroup({ group, categories, query, onCount, onOpenTask, o
       {error && <div className="inline-error" role="alert">{error}<button type="button" onClick={() => void refresh()}>Retry</button></div>}
       {loading && !loaded ? <div className="loading-state"><span className="spinner" /> Loading to-dos…</div> : !tasks.length ? <div className="backlog-empty">{canShowTasks ? (query ? 'No to-dos match this search.' : 'No to-dos in this category.') : 'Select a tag to show matching to-dos.'}</div> : <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void onDragEnd(event)}>
         <SortableContext items={tasks.map((task) => task.id)} strategy={verticalListSortingStrategy}>
-          <div className="backlog-task-list">{tasks.map((task) => <SortableBacklogTask key={task.id} task={task} categories={categories} onOpen={() => onOpenTask(task)} onReady={async () => {
+          <div className="backlog-task-list">{tasks.map((task) => <SortableBacklogTask key={task.id} task={task} categories={categories} onOpen={() => onOpenTask(task)} onComplete={async (completed) => {
+            try { valueOf(await window.notiert.planner.setTaskCompleted({ id: task.id, completed })) }
+            catch (reason) { onError(reason instanceof Error ? reason.message : 'To-do status could not be changed.') }
+          }} onReady={async () => {
             try { valueOf(await window.notiert.planner.setReady({ id: task.id })) }
             catch (reason) { onError(reason instanceof Error ? reason.message : 'To-do could not be added to Ready.') }
           }} onCategoryChange={(categoryId) => void setCategory(task.id, categoryId)} draggingDisabled={Boolean(query)} />)}</div>
@@ -159,9 +162,10 @@ function BacklogCategoryGroup({ group, categories, query, onCount, onOpenTask, o
   </section>
 }
 
-function SortableBacklogTask({ task, categories, onOpen, onReady, onCategoryChange, draggingDisabled }: { task: PlannerTask; categories: Category[]; onOpen: () => void; onReady: () => void; onCategoryChange: (categoryId: string | null) => void; draggingDisabled: boolean }) {
+function SortableBacklogTask({ task, categories, onOpen, onComplete, onReady, onCategoryChange, draggingDisabled }: { task: PlannerTask; categories: Category[]; onOpen: () => void; onComplete: (completed: boolean) => void; onReady: () => void; onCategoryChange: (categoryId: string | null) => void; draggingDisabled: boolean }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: task.id, disabled: draggingDisabled })
   return <article ref={setNodeRef} className={`backlog-task ${isDragging ? 'is-dragging' : ''}`} style={{ transform: CSS.Transform.toString(transform), transition }}>
+    <input type="checkbox" className="backlog-completion-toggle" aria-label={`Mark as done: ${task.body.split('\n')[0] || 'to-do'}`} checked={task.completedAt != null} onChange={(event) => onComplete(event.target.checked)} />
     <button type="button" className="backlog-drag-handle" aria-label={`Reorder ${task.body.split('\n')[0] || 'to-do'}`} title={draggingDisabled ? 'Clear search to reorder' : 'Drag to change priority'} {...attributes} {...listeners} disabled={draggingDisabled}><GripVertical size={15} /></button>
     <div className="backlog-task-main"><button type="button" className="backlog-task-title" onClick={onOpen}>{task.body.split('\n').find((line) => line.trim()) || (task.images.length ? 'Image to-do' : 'Untitled task')}</button>{task.tags.length > 0 && <div className="backlog-task-tags">{task.tags.map((tag) => <span key={tag}>#{tag}</span>)}</div>}</div>
     <select aria-label={`Category for ${task.body.split('\n')[0] || 'to-do'}`} value={task.categoryId ?? ''} onChange={(event) => onCategoryChange(event.target.value || null)}><option value="">Unassigned</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
