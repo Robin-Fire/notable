@@ -8,7 +8,7 @@ const Database = require('better-sqlite3')
 const { buildSync } = require('esbuild')
 
 const root = path.resolve(__dirname, '..')
-const generated = path.join(__dirname, '.generated')
+const generated = path.join(__dirname, '.generated', 'calenban')
 fs.mkdirSync(generated, { recursive: true })
 buildSync({ absWorkingDir: root, entryPoints: ['src/main/storage/database.ts'], outfile: path.join(generated, 'database.cjs'), bundle: true, platform: 'node', format: 'cjs', packages: 'external' })
 buildSync({ absWorkingDir: root, entryPoints: ['src/shared/plannerDrop.ts'], outfile: path.join(generated, 'plannerDrop.cjs'), bundle: true, platform: 'node', format: 'cjs', packages: 'external' })
@@ -130,25 +130,163 @@ test('Inbox retrieval paginates without losing stable ordering', () => {
   })
 })
 
-test('tasks move from project backlog to Ready, a day, and back to Ready', () => {
+test('tasks move between category backlog, Ready, a day, and back to Ready', () => {
   withStore((store) => {
-    const project = store.createCategory('Client A')
+    const category = store.createCategory('Client A')
     const id = store.submitCapture(randomUUID(), 0, 'Prepare review')
-    store.classifyItem(id, 'task', ['Design'], project.id)
-    assert.equal(store.listBacklog().items[0].projectId, project.id)
-    const otherProject = store.createCategory('Client B')
-    store.setTaskProject(id, otherProject.id)
-    assert.equal(store.listBacklog().items[0].projectId, otherProject.id)
-    store.setTaskProject(id, project.id)
+    store.classifyItem(id, 'task', ['Design'], category.id)
+    assert.equal(store.listBacklog({ categoryId: category.id }).items[0].categoryId, category.id)
+    const otherCategory = store.createCategory('Client B')
+    store.setItemCategory(id, otherCategory.id)
+    assert.equal(store.listBacklog({ categoryId: otherCategory.id }).items[0].categoryId, otherCategory.id)
+    store.setItemCategory(id, category.id)
     assert.equal(store.listPlanner('2026-09-26', '2026-09-28').tasks.length, 0)
+    const priority = store.db.prepare('SELECT backlog_position FROM notes WHERE id=?').get(id).backlog_position
     store.setTaskReady(id)
-    assert.equal(store.listBacklog().total, 0)
+    assert.equal(store.listBacklog({ categoryId: category.id }).total, 0)
     assert.equal(store.listPlanner('2026-09-26', '2026-09-28').tasks[0].ready, true)
     store.movePlannerTask(id, '2026-09-27', null, null)
     assert.equal(store.listPlanner('2026-09-26', '2026-09-28').tasks[0].plannedDate, '2026-09-27')
     store.setTaskReady(id)
     assert.equal(store.listPlanner('2026-09-26', '2026-09-28').tasks[0].plannedDate, null)
-    assert.equal(store.listPlanner('2026-09-26', '2026-09-28').tasks[0].projectId, project.id)
+    assert.equal(store.listPlanner('2026-09-26', '2026-09-28').tasks[0].categoryId, category.id)
+    assert.equal(store.db.prepare('SELECT backlog_position FROM notes WHERE id=?').get(id).backlog_position, priority)
+  })
+})
+
+test('v7 migration assigns direct categories only from unambiguous legacy tags and initializes priority', () => {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'notable-v7-'))
+  const file = path.join(folder, 'notes.sqlite')
+  let store = new Store(file)
+  try {
+    const one = store.createCategory('One')
+    const two = store.createCategory('Two')
+    const onlyOne = store.createTag('Only one', one.id)
+    const alsoOne = store.createTag('Also one', one.id)
+    const other = store.createTag('Other', two.id)
+    const note = store.submitCapture(randomUUID(), 0, 'Legacy note')
+    store.classifyItem(note, 'note', [onlyOne.name])
+    store.db.prepare('UPDATE notes SET project_id=NULL WHERE id=?').run(note)
+    const ambiguous = store.submitCapture(randomUUID(), 0, 'Ambiguous note')
+    store.classifyItem(ambiguous, 'note', [alsoOne.name, other.name])
+    store.db.prepare('UPDATE notes SET project_id=NULL WHERE id=?').run(ambiguous)
+    const newest = store.submitCapture(randomUUID(), 0, 'Newest task')
+    store.classifyItem(newest, 'task', [], one.id)
+    const older = store.submitCapture(randomUUID(), 0, 'Older task')
+    store.classifyItem(older, 'task', [], one.id)
+    store.db.prepare('UPDATE notes SET created_at=100 WHERE id=?').run(newest)
+    store.db.prepare('UPDATE notes SET created_at=50 WHERE id=?').run(older)
+
+    store.db.exec('DROP INDEX notes_backlog_priority; ALTER TABLE notes DROP COLUMN backlog_position; ALTER TABLE drafts DROP COLUMN category_id; DELETE FROM schema_migrations WHERE version=8;')
+    store.close()
+    store = new Store(file)
+
+    assert.equal(store.getNote(note).categoryId, one.id)
+    assert.equal(store.getNote(ambiguous).categoryId, null)
+    assert.deepEqual(store.listBacklog({ categoryId: one.id }).items.map((item) => item.id), [newest, older])
+    assert.equal(store.getCaptureDraft().categoryId, null)
+    assert.equal(store.checkIntegrity(), undefined)
+    assert.ok(fs.readdirSync(path.join(folder, 'backups')).some((name) => name.startsWith('pre-migration-')))
+  } finally { store?.close(); fs.rmSync(folder, { recursive: true, force: true }) }
+})
+
+test('capture category persists in the draft and copies to the submitted Inbox item', () => {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'notable-capture-category-'))
+  const file = path.join(folder, 'notes.sqlite')
+  let store = new Store(file)
+  try {
+    const category = store.createCategory('Personal')
+    store.updateDraft('Captured thought', 0, 0, category.id)
+    store.close()
+    store = new Store(file)
+    assert.equal(store.getCaptureDraft().categoryId, category.id)
+    const id = store.submitCapture(randomUUID(), 0, 'Captured thought', category.id)
+    assert.equal(store.getNote(id).categoryId, category.id)
+    assert.equal(store.getCaptureDraft().categoryId, null)
+  } finally { store?.close(); fs.rmSync(folder, { recursive: true, force: true }) }
+})
+
+test('classification preserves an Inbox category by default and honors an explicit Unassigned choice', () => {
+  withStore((store) => {
+    const category = store.createCategory('Work')
+    const tag = store.createTag('Planning', category.id)
+    const keep = store.submitCapture(randomUUID(), 0, 'Keep my category', category.id)
+    store.classifyItem(keep, 'note', [tag.name])
+    assert.equal(store.getNote(keep).categoryId, category.id)
+    const clear = store.submitCapture(randomUUID(), 0, 'Leave unassigned', category.id)
+    store.classifyItem(clear, 'note', [tag.name], null)
+    assert.equal(store.getNote(clear).categoryId, null)
+  })
+})
+
+test('category tag filters use OR matching, deduplicate multi-tag tasks, and include No tag', () => {
+  withStore((store) => {
+    const category = store.createCategory('Work')
+    const otherCategory = store.createCategory('Home')
+    const tagOne = store.createTag('Planning', category.id)
+    const tagTwo = store.createTag('Writing', category.id)
+    const foreignTag = store.createTag('Home tag', otherCategory.id)
+    const matching = store.submitCapture(randomUUID(), 0, 'Both tags')
+    store.classifyItem(matching, 'task', [tagOne.name, tagTwo.name], category.id)
+    const foreignTagged = store.submitCapture(randomUUID(), 0, 'Foreign tag')
+    store.classifyItem(foreignTagged, 'task', [foreignTag.name], category.id)
+    const untagged = store.submitCapture(randomUUID(), 0, 'No tag')
+    store.classifyItem(untagged, 'task', [], category.id)
+    const unrelated = store.submitCapture(randomUUID(), 0, 'Another category')
+    store.classifyItem(unrelated, 'task', [tagOne.name], otherCategory.id)
+
+    const filtered = store.listBacklog({ categoryId: category.id, tagNames: [tagOne.name, tagTwo.name], includeUntagged: true })
+    assert.deepEqual(filtered.items.map((item) => item.id), [matching, untagged])
+    assert.equal(filtered.total, 2)
+    assert.ok(filtered.tagNames.includes(foreignTag.name))
+    assert.deepEqual(store.listBacklog({ categoryId: category.id, tagNames: [foreignTag.name], includeUntagged: false }).items.map((item) => item.id), [foreignTagged])
+    assert.deepEqual(store.listBacklog({ categoryId: category.id, tagNames: [], includeUntagged: false }).items, [])
+    assert.deepEqual(store.listBacklog({ categoryId: category.id, tagNames: [], includeUntagged: true }).items.map((item) => item.id), [untagged])
+  })
+})
+
+test('reordering a category backlog updates the shared order used by category and tag pages', () => {
+  withStore((store) => {
+    const category = store.createCategory('Work')
+    const tag = store.createTag('Planning', category.id)
+    const first = store.submitCapture(randomUUID(), 0, 'First')
+    const second = store.submitCapture(randomUUID(), 0, 'Second')
+    const third = store.submitCapture(randomUUID(), 0, 'Third')
+    store.classifyItem(first, 'task', [tag.name], category.id)
+    store.classifyItem(second, 'task', [tag.name], category.id)
+    store.classifyItem(third, 'task', [], category.id)
+    store.reorderBacklog(first, category.id, null)
+
+    const backlog = store.listBacklog({ categoryId: category.id }).items.map((item) => item.id)
+    const categoryPage = store.listNotes({ query: '', scope: 'notes', categoryId: category.id, limit: 50, sort: 'priority' }).items.filter((item) => item.kind === 'task').map((item) => item.id)
+    const tagPage = store.listNotes({ query: '', scope: 'notes', tags: [tag.name], limit: 50, sort: 'priority' }).items.filter((item) => item.kind === 'task').map((item) => item.id)
+    assert.deepEqual(backlog, [second, third, first])
+    assert.deepEqual(categoryPage, [second, third, first])
+    assert.deepEqual(tagPage, [second, first])
+    assert.throws(() => store.reorderBacklog(first, category.id, 'ffffffff-ffff-4fff-8fff-ffffffffffff'), /target to-do/i)
+  })
+})
+
+test('Backlog pagination keeps a stable priority cursor and places a move after the loaded page', () => {
+  withStore((store) => {
+    const category = store.createCategory('Work')
+    const ids = []
+    for (let index = 0; index < 55; index++) {
+      const id = store.submitCapture(randomUUID(), 0, `Task ${index}`)
+      store.classifyItem(id, 'task', [], category.id)
+      ids.push(id)
+    }
+    const firstPage = store.listBacklog({ categoryId: category.id, limit: 50 })
+    const secondPage = store.listBacklog({ categoryId: category.id, cursor: firstPage.nextCursor, limit: 50 })
+    assert.equal(firstPage.items.length, 50)
+    assert.equal(secondPage.items.length, 5)
+    assert.equal(firstPage.total, 55)
+    assert.equal(new Set([...firstPage.items, ...secondPage.items].map((item) => item.id)).size, 55)
+
+    store.reorderBacklog(ids[0], category.id, secondPage.items[0].id)
+    const reordered = store.listBacklog({ categoryId: category.id, limit: 52 }).items.map((item) => item.id)
+    assert.equal(reordered[49], ids[0])
+    assert.equal(reordered[50], ids[50])
   })
 })
 
@@ -278,4 +416,50 @@ test('version 2 database migrates with historical meeting labels intact', () => 
     assert.equal(store.getNote(noteId).meetingTitle, 'Historical sync')
     assert.equal(store.checkIntegrity(), undefined)
   } finally { store?.close(); fs.rmSync(folder, { recursive: true, force: true }) }
+})
+
+
+test('weekly meetings repeat through an inclusive end date and each occurrence can be removed independently', () => {
+  withStore((store) => {
+    const first = store.savePlannerEvent({ title: 'Weekly review', startAt: new Date(2026, 9, 5, 9).getTime(), endAt: new Date(2026, 9, 5, 10).getTime(), allDay: false, recurrence: { frequency: 'weekly', until: '2026-10-19' } })
+    const occurrences = store.listPlanner('2026-10-01', '2026-10-31').events
+    assert.equal(occurrences.length, 3)
+    assert.equal(occurrences[0].id, first.id)
+    assert.equal(new Set(occurrences.map((event) => event.id)).size, 3)
+    assert.deepEqual(occurrences.map((event) => new Date(event.startAt).getDate()), [5, 12, 19])
+    const deleted = store.deletePlannerEvent(occurrences[1].id)
+    assert.equal(store.listPlanner('2026-10-01', '2026-10-31').events.length, 2)
+    store.undoDeletePlannerEvent(deleted)
+    assert.equal(store.listPlanner('2026-10-01', '2026-10-31').events.length, 3)
+  })
+})
+
+test('monthly repeats skip missing dates and invalid recurrence rolls back without saving any meeting', () => {
+  withStore((store) => {
+    const input = { title: 'Month end', startAt: new Date(2026, 0, 31, 9).getTime(), endAt: new Date(2026, 0, 31, 10).getTime(), allDay: false }
+    store.savePlannerEvent({ ...input, recurrence: { frequency: 'monthly', until: '2026-04-30' } })
+    const occurrences = store.listPlanner('2026-01-01', '2026-04-30').events
+    assert.deepEqual(occurrences.map((event) => [new Date(event.startAt).getMonth(), new Date(event.startAt).getDate()]), [[0, 31], [2, 31]])
+    assert.throws(() => store.savePlannerEvent({ ...input, recurrence: { frequency: 'daily', until: '2026-02-30' } }), /repeat end date/)
+    assert.throws(() => store.savePlannerEvent({ ...input, recurrence: { frequency: 'daily', until: '2028-01-31' } }), /366 meetings/)
+    assert.equal(store.db.prepare('SELECT count(*) AS count FROM planner_events').get().count, 2)
+  })
+})
+
+test('recurring all-day and timed meetings preserve local calendar times across daylight saving changes', () => {
+  const previousTimezone = process.env.TZ
+  process.env.TZ = 'Europe/Berlin'
+  try {
+    withStore((store) => {
+      store.savePlannerEvent({ title: 'Daily review', startAt: new Date(2026, 9, 24, 9).getTime(), endAt: new Date(2026, 9, 24, 10).getTime(), allDay: false, recurrence: { frequency: 'daily', until: '2026-10-26' } })
+      store.savePlannerEvent({ title: 'All day', startAt: new Date(2026, 9, 24).getTime(), endAt: new Date(2026, 9, 25).getTime(), allDay: true, recurrence: { frequency: 'daily', until: '2026-10-26' } })
+      const events = store.listPlanner('2026-10-24', '2026-10-26').events
+      const timed = events.filter((event) => !event.allDay)
+      assert.deepEqual(timed.map((event) => new Date(event.startAt).getHours()), [9, 9, 9])
+      assert.deepEqual(timed.map((event) => new Date(event.endAt).getHours()), [10, 10, 10])
+      const allDay = events.filter((event) => event.allDay)
+      assert.deepEqual(allDay.map((event) => new Date(event.endAt).getHours()), [0, 0, 0])
+      assert.equal(allDay[1].endAt - allDay[1].startAt, 25 * 60 * 60 * 1000)
+    })
+  } finally { if (previousTimezone === undefined) delete process.env.TZ; else process.env.TZ = previousTimezone }
 })

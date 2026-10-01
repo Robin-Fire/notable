@@ -20,8 +20,11 @@ app.whenReady().then(async () => {
     if (await notes.webContents.executeJavaScript("Boolean(document.querySelector('.side-nav'))")) break
     await wait(100)
   }
-  await notes.webContents.executeJavaScript("[...document.querySelectorAll('.side-nav button')].find((button) => button.textContent.includes('All notes')).click()")
+  await notes.webContents.executeJavaScript("[...document.querySelectorAll('.side-nav button')].find((button) => button.textContent.includes('All items')).click()")
   await wait(300)
+  const createdCategory = await notes.webContents.executeJavaScript("window.notable.notes.createCategory('Capture smoke')")
+  if (!createdCategory.ok) throw new Error(`Category creation failed: ${createdCategory.message}`)
+  const categoryId = createdCategory.value.id
   await notes.webContents.executeJavaScript("document.querySelector('.capture-button').click()")
   for (let attempt = 0; attempt < 50 && !findWindow('capture'); attempt++) await wait(100)
   const capture = findWindow('capture')
@@ -30,6 +33,16 @@ app.whenReady().then(async () => {
     if (await capture.webContents.executeJavaScript("Boolean(document.querySelector('.capture-input'))")) break
     await wait(100)
   }
+  let categoryAvailable = false
+  for (let attempt = 0; attempt < 50 && !categoryAvailable; attempt++) {
+    categoryAvailable = await capture.webContents.executeJavaScript(`(() => { const select = document.querySelector('[aria-label="Capture category"]'); return Boolean(select && [...select.options].some((option) => option.value === ${JSON.stringify(categoryId)})); })()`)
+    if (!categoryAvailable) await wait(100)
+  }
+  if (!categoryAvailable) {
+    const categoryState = await capture.webContents.executeJavaScript("Promise.all([window.notable.capture.getState(), window.notable.capture.categories()])")
+    throw new Error(`Capture category selector did not load the new category: ${JSON.stringify({ categoryId, categoryState })}`)
+  }
+  await capture.webContents.executeJavaScript(`(() => { const select = document.querySelector('[aria-label="Capture category"]'); select.value = ${JSON.stringify(categoryId)}; select.dispatchEvent(new Event('change', { bubbles: true })); })()`)
   await capture.webContents.executeJavaScript("document.querySelector('.capture-input').focus()")
   capture.webContents.insertText('Capture smoke test')
   await wait(400)
@@ -41,15 +54,16 @@ app.whenReady().then(async () => {
   const Database = require('better-sqlite3')
   const db = new Database(path.join(profile, 'notable.sqlite'), { readonly: true })
   const count = db.prepare("SELECT count(*) AS count FROM notes WHERE kind='inbox' AND body='Capture smoke test'").get().count
+  const categorizedCount = db.prepare("SELECT count(*) AS count FROM notes WHERE kind='inbox' AND body='Capture smoke test' AND project_id=?").get(categoryId).count
   db.close()
-  if (count !== 1) throw new Error(`Capture was not saved: ${JSON.stringify(after)}`)
+  if (count !== 1 || categorizedCount !== 1) throw new Error(`Capture was not saved with its category: ${JSON.stringify({ after, count, categorizedCount })}`)
   let visible = false
   for (let attempt = 0; attempt < 30; attempt++) {
     visible = await notes.webContents.executeJavaScript("Boolean([...document.querySelectorAll('.note-preview')].some((item) => item.textContent === 'Capture smoke test'))")
     if (visible) break
     await wait(100)
   }
-  if (!visible) throw new Error('Saved capture did not appear in All notes')
+  if (!visible) throw new Error('Saved capture did not appear in All items')
   await notes.webContents.executeJavaScript("document.querySelector('.capture-button').click()")
   await wait(250)
   const pasted = await capture.webContents.executeJavaScript(`(() => {
@@ -84,7 +98,7 @@ app.whenReady().then(async () => {
   }
   const imageRendered = await notes.webContents.executeJavaScript("document.querySelector('.detail-panel .item-images img')?.getAttribute('src')?.startsWith('data:image/png;base64,') ?? false")
   if (!imageRendered) throw new Error('Saved image did not render in item details')
-  process.stdout.write(`capture_saved=${count} visible_in_all_notes=${visible} image_capture_saved=${imageCount} image_rendered=${imageRendered}\n`)
+  process.stdout.write(`capture_saved=${count} categorized_capture_saved=${categorizedCount} visible_in_all_items=${visible} image_capture_saved=${imageCount} image_rendered=${imageRendered}\n`)
   app.exit(0)
 }).catch((error) => { process.stderr.write(`${error.stack ?? error}\n`); app.exit(1) })
 

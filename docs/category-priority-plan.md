@@ -1,0 +1,46 @@
+# Categories, priority, and capture: implementation plan
+
+## Agreed behavior
+
+- Rename **All notes** to **All items** in navigation, page heading, empty states, and help text. The page continues to include Inbox captures, reference notes, and to-dos.
+- Categories apply directly to all three item types. A capture may be assigned a category before saving, but it still enters Inbox and must be filed as a note or to-do.
+- Each category has one persistent to-do priority order. Backlog, that category's page, and its tag pages show the same relative order. Plan's Ready and calendar ordering remain independent.
+- Backlog has a category row for each category and an Unassigned row. A category row displays all of its tags as filter pills, plus **No tag**. All pills are selected initially. Multiple selected tags use OR matching; a task with several tags appears once. Deselecting every pill yields an empty task list for that category, with a reset action. The row count reflects visible tasks; an overall count reflects all matching Backlog tasks.
+- Clicking a category name in the left sidebar opens a category page containing every item assigned directly to that category, including items without a tag. The page has a **No tag** section for those items. Existing tag pages still show items bearing that tag.
+- In Inbox, choosing a category exposes all tags belonging to it in the tag picker immediately; selecting one adds it with one click. Search and free text tag creation remain available.
+
+## 1. Data model and migration
+
+1. Add schema migration v8 in `src/main/storage/database.ts`, with a pre-migration backup and updated schema-version and restore checks. Use the existing `notes.project_id` column as the single stored category assignment for all item kinds; rename its code-facing meaning to `categoryId` so notes and Inbox captures can use it without a second source of truth. Keep the SQL column name for backup compatibility unless a later migration has a compelling reason to rename it.
+2. Backfill legacy reference notes and Inbox items from their tags **only when all category-bound tags point to exactly one category**. Leave items with no category-bound tags or tags spanning categories Unassigned, preserving all tags. Existing task assignments remain authoritative.
+3. Add a nullable `backlog_position` (or `priority_position`) column and an index for category plus position. Populate existing open tasks in each category using their current Backlog order (newest first, then ID) so migration does not visibly shuffle them. Keep `task_position` solely for Ready and scheduled slots.
+4. Define lifecycle rules: a new to-do appends to its category's priority order; changing category appends it to the destination category; returning from Ready or a calendar day preserves its priority rank; returning a task to Inbox clears its to-do rank but keeps its category; restoring a trashed task uses its previous rank if valid or appends. Category deletion, if added later, moves affected items to Unassigned transactionally.
+5. Include the category in every item projection (`Note` and `PlannerTask`) and in capture-draft state. Store the selected capture category in the existing draft record, not only in React state, so Escape, blur, window reopen, and app restart preserve it. On successful submit, copy it atomically to the new Inbox item, then clear the draft selection with the body and images.
+
+## 2. Contracts, storage queries, and IPC
+
+1. Extend `src/shared/contracts.ts` with `categoryId` on notes, capture state, capture submit and draft-update inputs, Inbox classification, and item edits. Update both preloads and `src/main/index.ts` with validated handlers. The capture window needs a read-only category-list endpoint limited to taxonomy names and IDs.
+2. Make classification preserve the Inbox item's category unless Inbox explicitly changes it. Apply the chosen category to notes and to-dos. Do not clear category when a task returns to Inbox. Make subsequent category edits available in the item detail editor as well as Inbox and Backlog, so incorrectly assigned items can be corrected.
+3. Add `categoryId`, `untagged`, and `sort: priority` options to item listing where applicable. Category matching uses direct assignment rather than the category of an item's tag. This guarantees untagged items appear and avoids duplicates for multi-tag items.
+4. Change Backlog pagination to use category order, `backlog_position`, and ID as a stable keyset cursor. Put category and selected tag filters in the database query, with total counts computed from the same predicate. Avoid loading only the first 50 tasks and filtering them in React, which would hide later matches and make reordering unreliable.
+5. Add a transactional reorder endpoint accepting task ID, category ID, and before/after target ID (or end of category). Validate both tasks are open, in the same category, and eligible; then update affected positions atomically and broadcast changes. A move from a tag-filtered view inserts the task relative to the target in the full category order, preserving the relative order of all other tasks. Support an optimistic UI move with rollback and an error message if persistence fails.
+6. Keep tag identity global, as it is today. Selecting a category limits offered tag choices to tags assigned to that category; existing tags from another category remain visible on an item until explicitly removed. Do not silently move a global tag to another category or erase item tags when its category changes.
+
+## 3. Views and interaction
+
+1. `src/renderer/notes/NotesApp.tsx`: rename the route label to **All items** while retaining the internal `all` route for compatibility. Make each sidebar category name both expandable and openable (separate controls), add the category view, and show **No tag** items there. Show to-dos in priority order in category and tag views; keep notes and Inbox captures in a clearly separate recency-ordered section. Reuse the existing note-detail editing guard when navigating.
+2. `src/renderer/backlog/BacklogView.tsx`: render category tag pills from taxonomy and tags used by that category’s Backlog to-dos, with **No tag**, selected initially and tracked independently for each category. Keep the selection stable through refreshes; new tags become selected by default. Offer **Select all** when pills have been deselected. Render task order by stored priority, not capture date, and enable pointer and keyboard reorder within each category using the app's existing `dnd-kit` dependency. Disable dragging while a search query is active unless the UI clearly communicates that the move affects the full category order.
+3. `src/renderer/inbox/InboxView.tsx` and `src/renderer/components/TagEditor.tsx`: keep category selection per card and persist the pending choice alongside its local tag draft. Replace the native datalist for this use with a visible list of all category tags and one-click add/remove controls. Retain an input for searching and creating a new tag. Ensure filing as either Note or To-do sends the selected category and does not discard it.
+4. `src/renderer/capture/Capture.tsx`: add a compact category chooser with an Unassigned default, keyboard access, and a visible selected-category label. Save selection through the capture draft API. Increase capture-window height when the chooser or menu is open, and prevent clicking it from triggering the capture blur/dismiss path. Mirror the chooser in the browser preview capture dialog.
+5. Update `src/renderer/styles.css` for pill wrapping, drag affordances, focus states, category and tag page sections, and the small capture window. Update `src/renderer/browserPreview.ts` so local preview behavior matches the desktop API.
+
+## 4. Verification and acceptance
+
+1. Add storage tests for v7-to-v8 migration, ambiguous legacy tags, capture category persistence and clearing, note/to-do classification, category reassignment, and priority changes across Backlog, category, and tag queries. Verify Ready/calendar moves do not overwrite priority.
+2. Add interaction tests for one-click Inbox tag choice, category capture through save and reopen, all-selected pill defaults including **No tag**, multi-tag OR filtering without duplicates, deselect-all/reset, category pages with untagged notes and tasks, and keyboard reorder. Test filtered and paginated reorders, stale reorder targets, and rollback after API errors.
+3. Run `npm run typecheck`, `npm test`, and `npm run build`. In the packaged Windows app, manually check capture focus and resizing, drag and keyboard movement, long category/tag lists, backup/restore migration, and a Backlog category with more than 50 tasks.
+4. Update `README.md` and `docs/calenban-plan.md` to describe **All items**, direct category assignment, tag filtering, and shared priority ordering.
+
+## Implementation order
+
+Implement migration and query contracts first, then capture and Inbox category/tag flows, then category and tag views, then Backlog filters and reordering, and finally documentation and verification. This order makes the new category assignment and priority visible through the same APIs before the drag UI depends on them.

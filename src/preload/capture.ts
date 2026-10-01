@@ -4,6 +4,7 @@ import type { NotableApi } from '../shared/contracts'
 const capture: Pick<NotableApi, 'capture'> & { windows: Omit<NotableApi['windows'], 'onView' | 'ready'> } = {
   capture: {
     getState: () => ipcRenderer.invoke('capture:get-state'),
+    categories: () => ipcRenderer.invoke('capture:categories'),
     updateDraft: (input) => ipcRenderer.invoke('capture:update-draft', input),
     flushBeforeQuit: (input) => ipcRenderer.invoke('capture:flush-before-quit', input),
     submit: (input) => ipcRenderer.invoke('capture:submit', input),

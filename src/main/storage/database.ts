@@ -3,16 +3,17 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { AppError } from '../../shared/errors'
-import type { CaptureImage, Category, DeletedPlannerEvent, ImageRef, Note, NoteFilter, NotePage, PlannerEvent, PlannerTask, TagRecord } from '../../shared/contracts'
+import { meetingOccurrences } from '../../shared/meetingRecurrence'
+import type { CaptureImage, Category, DeletedPlannerEvent, ImageRef, Note, NoteFilter, NotePage, PlannerEvent, PlannerEventInput, PlannerTask, TagRecord } from '../../shared/contracts'
 import { eventOverlapsLocalDay, localDateBounds } from '../../shared/plannerDates'
 
-type NoteRow = { id: string; body: string; meeting_id: string | null; created_at: number; updated_at: number; deleted_at: number | null; revision: number; meeting_title: string | null; kind: 'inbox' | 'note' | 'task'; processed_at: number | null; tag_names: string | null; image_refs: string | null; task_status: 'open' | 'done' | null; planned_date: string | null; task_position: number; before_event_id: string | null; project_id: string | null; task_ready: number }
+type NoteRow = { id: string; body: string; meeting_id: string | null; created_at: number; updated_at: number; deleted_at: number | null; revision: number; meeting_title: string | null; kind: 'inbox' | 'note' | 'task'; processed_at: number | null; tag_names: string | null; image_refs: string | null; task_status: 'open' | 'done' | null; planned_date: string | null; task_position: number; backlog_position: number; before_event_id: string | null; project_id: string | null; task_ready: number }
 type PlannerEventRow = { id: string; title: string; start_at: number; end_at: number; all_day: number }
 const NOTE_PROJECTION = "n.*,m.title AS meeting_title,(SELECT group_concat(t.name,char(31)) FROM note_tags nt JOIN item_tags t ON t.id=nt.tag_id WHERE nt.note_id=n.id) AS tag_names,(SELECT group_concat(ref,char(31)) FROM (SELECT i.id||':'||i.mime_type AS ref FROM item_images i WHERE i.note_id=n.id ORDER BY i.position)) AS image_refs"
 const NOTE_FROM = 'FROM notes n LEFT JOIN legacy_meeting_sessions m ON m.id=n.meeting_id'
-const noteFrom = (row: NoteRow): Note & { meetingTitle: string | null } => ({ id: row.id, body: row.body, meetingId: row.meeting_id, createdAt: row.created_at, updatedAt: row.updated_at, deletedAt: row.deleted_at, revision: row.revision, meetingTitle: row.meeting_title, kind: row.kind, processedAt: row.processed_at, tags: row.tag_names ? row.tag_names.split('\x1f') : [], images: row.image_refs ? row.image_refs.split('\x1f').map((value) => { const [id, mimeType] = value.split(':'); return { id: id!, mimeType: mimeType as ImageRef['mimeType'] } }) : [] })
+const noteFrom = (row: NoteRow): Note & { meetingTitle: string | null } => ({ id: row.id, body: row.body, meetingId: row.meeting_id, createdAt: row.created_at, updatedAt: row.updated_at, deletedAt: row.deleted_at, revision: row.revision, meetingTitle: row.meeting_title, kind: row.kind, processedAt: row.processed_at, categoryId: row.project_id, tags: row.tag_names ? row.tag_names.split('\x1f') : [], images: row.image_refs ? row.image_refs.split('\x1f').map((value) => { const [id, mimeType] = value.split(':'); return { id: id!, mimeType: mimeType as ImageRef['mimeType'] } }) : [] })
 const eventFrom = (row: PlannerEventRow): PlannerEvent => ({ id: row.id, title: row.title, startAt: row.start_at, endAt: row.end_at, allDay: Boolean(row.all_day) })
-const taskFrom = (row: NoteRow): PlannerTask => ({ ...noteFrom(row), plannedDate: row.planned_date, position: row.task_position, beforeEventId: row.before_event_id, projectId: row.project_id, ready: Boolean(row.task_ready) })
+const taskFrom = (row: NoteRow): PlannerTask => ({ ...noteFrom(row), plannedDate: row.planned_date, position: row.task_position, priorityPosition: row.backlog_position, beforeEventId: row.before_event_id, ready: Boolean(row.task_ready) })
 function normalizeTags(tags: string[]) {
   return [...new Map(tags.map((tag) => tag.trim().replace(/\s+/g, ' ').slice(0, 40)).filter(Boolean).map((tag): [string, string] => [tag.toLowerCase(), tag])).values()].slice(0, 20)
 }
@@ -45,7 +46,7 @@ export class Store {
   private migrate() {
     const hasMigrationTable = Boolean(this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get())
     const currentVersion = hasMigrationTable ? (this.db.prepare('SELECT max(version) AS version FROM schema_migrations').get() as { version: number | null }).version ?? 0 : 0
-    if (hasMigrationTable && currentVersion < 7) {
+    if (hasMigrationTable && currentVersion < 8) {
       const backupDirectory = path.join(path.dirname(this.path), 'backups')
       fs.mkdirSync(backupDirectory, { recursive: true })
       this.db.pragma('wal_checkpoint(TRUNCATE)')
@@ -152,21 +153,43 @@ export class Store {
         this.db.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(7,?)').run(Date.now())
       })()
     }
+    if (!applied.has(8)) {
+      this.db.transaction(() => {
+        this.db.exec(`
+          ALTER TABLE drafts ADD COLUMN category_id TEXT REFERENCES categories(id) ON DELETE SET NULL;
+          ALTER TABLE notes ADD COLUMN backlog_position INTEGER NOT NULL DEFAULT 0;
+          UPDATE notes SET project_id=(
+            SELECT min(t.category_id) FROM note_tags nt JOIN item_tags t ON t.id=nt.tag_id
+            WHERE nt.note_id=notes.id AND t.category_id IS NOT NULL
+          ) WHERE kind<>'task' AND project_id IS NULL AND 1=(
+            SELECT count(DISTINCT t.category_id) FROM note_tags nt JOIN item_tags t ON t.id=nt.tag_id
+            WHERE nt.note_id=notes.id AND t.category_id IS NOT NULL
+          );
+          UPDATE notes AS n SET backlog_position=(
+            SELECT count(*) FROM notes AS o WHERE o.kind='task' AND o.task_status='open' AND o.deleted_at IS NULL
+              AND o.project_id IS n.project_id AND (o.created_at>n.created_at OR (o.created_at=n.created_at AND o.id>n.id))
+          ) WHERE n.kind='task' AND n.task_status='open' AND n.deleted_at IS NULL;
+          CREATE INDEX notes_backlog_priority ON notes(kind,deleted_at,task_status,task_ready,planned_date,project_id,backlog_position,id);
+        `)
+        this.db.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(8,?)').run(Date.now())
+      })()
+    }
     const version = this.db.prepare('SELECT max(version) AS version FROM schema_migrations').get() as { version: number | null }
-    if (version.version !== 7) throw new AppError(version.version && version.version > 7 ? 'DB_NEWER_VERSION' : 'DB_INVALID_SCHEMA', 'This database has an unsupported notable schema.')
+    if (version.version !== 8) throw new AppError(version.version && version.version > 8 ? 'DB_NEWER_VERSION' : 'DB_INVALID_SCHEMA', 'This database has an unsupported notable schema.')
   }
 
   getCaptureDraft() {
-    const draft = this.db.prepare("SELECT body,generation,revision FROM drafts WHERE key='capture'").get() as { body: string; generation: number; revision: number }
+    const draft = this.db.prepare("SELECT body,generation,revision,category_id AS categoryId FROM drafts WHERE key='capture'").get() as { body: string; generation: number; revision: number; categoryId: string | null }
     const rows = this.db.prepare('SELECT id,mime_type,data FROM capture_draft_images ORDER BY position').all() as { id: string; mime_type: ImageRef['mimeType']; data: Buffer }[]
     return { ...draft, images: rows.map((row): CaptureImage => ({ id: row.id, mimeType: row.mime_type, dataUrl: `data:${row.mime_type};base64,${row.data.toString('base64')}` })) }
   }
 
-  updateDraft(body: string, generation: number, revision: number) {
+  updateDraft(body: string, generation: number, revision: number, categoryId: string | null = null) {
     const current = this.db.prepare("SELECT generation,revision FROM drafts WHERE key='capture'").get() as { generation: number; revision: number }
     if (generation < current.generation || (generation === current.generation && revision < current.revision)) return current.revision
+    if (categoryId && !this.db.prepare('SELECT id FROM categories WHERE id=?').get(categoryId)) throw new AppError('CATEGORY_MISSING', 'That category no longer exists.')
     const nextRevision = generation === current.generation ? revision : 0
-    this.db.prepare("UPDATE drafts SET body=?,generation=?,revision=?,updated_at=? WHERE key='capture'").run(body, generation, nextRevision, Date.now())
+    this.db.prepare("UPDATE drafts SET body=?,category_id=?,generation=?,revision=?,updated_at=? WHERE key='capture'").run(body, categoryId, generation, nextRevision, Date.now())
     return nextRevision
   }
 
@@ -201,24 +224,25 @@ export class Store {
     return `data:${row.mime_type};base64,${row.data.toString('base64')}`
   }
 
-  submitCapture(requestId: string, generation: number, body: string) {
+  submitCapture(requestId: string, generation: number, body: string, categoryId: string | null = null) {
     const cleaned = body.trim()
     const current = this.db.prepare("SELECT generation FROM drafts WHERE key='capture'").get() as { generation: number }
     const hasImages = generation === current.generation && Boolean(this.db.prepare('SELECT 1 FROM capture_draft_images LIMIT 1').get())
     if (!cleaned && !hasImages) throw new AppError('EMPTY_NOTE', 'Write something or paste an image before saving.')
     if ([...body].length > 50_000) throw new AppError('NOTE_TOO_LONG', 'Notes can contain up to 50,000 characters.')
+    if (categoryId && !this.db.prepare('SELECT id FROM categories WHERE id=?').get(categoryId)) throw new AppError('CATEGORY_MISSING', 'That category no longer exists.')
     const existing = this.db.prepare('SELECT id FROM notes WHERE capture_request_id=?').get(requestId) as { id: string } | undefined
     if (existing) return existing.id
     const now = Date.now()
     const id = randomUUID()
     const commit = this.db.transaction(() => {
-      this.db.prepare("INSERT INTO notes(id,capture_request_id,body,meeting_id,created_at,updated_at,revision,kind) VALUES(?,?,?,NULL,?,?,1,'inbox')")
-        .run(id, requestId, body.replace(/\r\n?/g, '\n'), now, now)
+      this.db.prepare("INSERT INTO notes(id,capture_request_id,body,meeting_id,created_at,updated_at,revision,kind,project_id) VALUES(?,?,?,NULL,?,?,1,'inbox',?)")
+        .run(id, requestId, body.replace(/\r\n?/g, '\n'), now, now, categoryId)
       if (generation === current.generation) {
         this.db.prepare('INSERT INTO item_images(id,note_id,position,mime_type,data) SELECT id,?,position,mime_type,data FROM capture_draft_images').run(id)
         this.db.prepare('DELETE FROM capture_draft_images').run()
       }
-      this.db.prepare("UPDATE drafts SET body='',generation=?,revision=0,updated_at=? WHERE key='capture' AND generation<=?").run(generation + 1, now, generation)
+      this.db.prepare("UPDATE drafts SET body='',category_id=NULL,generation=?,revision=0,updated_at=? WHERE key='capture' AND generation<=?").run(generation + 1, now, generation)
       this.syncSearch(id)
     })
     commit()
@@ -228,9 +252,11 @@ export class Store {
 
   listNotes(filter: NoteFilter): NotePage {
     const trashScope = filter.scope === 'trash'
+    const prioritySort = filter.sort === 'priority' && !trashScope
     const sortColumn = trashScope ? 'n.deleted_at' : 'n.created_at'
     const where: string[] = [trashScope ? 'n.deleted_at IS NOT NULL' : 'n.deleted_at IS NULL']
-    const params: (string | number)[] = []
+    const params: (string | number | null)[] = []
+    if (filter.categoryId) { where.push('n.project_id=?'); params.push(filter.categoryId) }
     if (filter.kinds?.length) {
       where.push(`n.kind IN (${filter.kinds.map(() => '?').join(',')})`)
       params.push(...filter.kinds)
@@ -258,16 +284,29 @@ export class Store {
     const pageWhere = [...where]
     const pageParams = [...params]
     if (filter.cursor) {
-      const operator = filter.sort === 'oldest' ? '>' : '<'
-      pageWhere.push(`(${sortColumn}${operator}? OR (${sortColumn}=? AND n.id${operator}?))`)
-      pageParams.push(filter.cursor.sortAt, filter.cursor.sortAt, filter.cursor.id)
+      if (prioritySort && filter.cursor.kindRank === 0 && filter.cursor.priorityPosition !== undefined) {
+        pageWhere.push("((n.kind='task' AND (n.backlog_position>? OR (n.backlog_position=? AND n.id>?))) OR n.kind<>'task')")
+        pageParams.push(filter.cursor.priorityPosition, filter.cursor.priorityPosition, filter.cursor.id)
+      } else if (prioritySort) {
+        pageWhere.push(`n.kind<>'task' AND (${sortColumn}<? OR (${sortColumn}=? AND n.id<?))`)
+        pageParams.push(filter.cursor.sortAt, filter.cursor.sortAt, filter.cursor.id)
+      } else {
+        const operator = filter.sort === 'oldest' ? '>' : '<'
+        pageWhere.push(`(${sortColumn}${operator}? OR (${sortColumn}=? AND n.id${operator}?))`)
+        pageParams.push(filter.cursor.sortAt, filter.cursor.sortAt, filter.cursor.id)
+      }
     }
     const order = filter.sort === 'oldest' ? 'ASC' : 'DESC'
-    const items = this.db.prepare(`SELECT ${NOTE_PROJECTION} ${NOTE_FROM} WHERE ${pageWhere.join(' AND ')} ORDER BY ${sortColumn} ${order},n.id ${order} LIMIT ?`)
+    const orderBy = prioritySort ? "CASE WHEN n.kind='task' THEN 0 ELSE 1 END,CASE WHEN n.kind='task' THEN n.backlog_position ELSE 0 END,CASE WHEN n.kind='task' THEN n.id END ASC,CASE WHEN n.kind<>'task' THEN n.created_at END DESC,CASE WHEN n.kind<>'task' THEN n.id END DESC" : `${sortColumn} ${order},n.id ${order}`
+    const items = this.db.prepare(`SELECT ${NOTE_PROJECTION} ${NOTE_FROM} WHERE ${pageWhere.join(' AND ')} ORDER BY ${orderBy} LIMIT ?`)
       .all(...pageParams, filter.limit) as NoteRow[]
     const last = items.at(-1)
     const sortAt = last ? (trashScope ? last.deleted_at : last.created_at) : null
-    return { items: items.map(noteFrom), nextCursor: items.length === filter.limit && last && sortAt !== null ? { sortAt, id: last.id } : null, total: count.count }
+    const nextCursor = items.length === filter.limit && last && sortAt !== null
+      ? prioritySort ? { sortAt, id: last.id, kindRank: last.kind === 'task' ? 0 : 1, ...(last.kind === 'task' ? { priorityPosition: last.backlog_position } : {}) }
+        : { sortAt, id: last.id }
+      : null
+    return { items: items.map(noteFrom), nextCursor, total: count.count }
   }
 
   listTags(): string[] {
@@ -325,15 +364,19 @@ export class Store {
     return (this.db.prepare("SELECT count(*) AS count FROM notes WHERE deleted_at IS NULL AND kind='inbox'").get() as { count: number }).count
   }
 
-  classifyItem(id: string, kind: 'note' | 'task', tags: string[], projectId: string | null = null) {
+  classifyItem(id: string, kind: 'note' | 'task', tags: string[], requestedCategoryId?: string | null) {
     const cleanTags = normalizeTags(tags)
     const now = Date.now()
     const transaction = this.db.transaction(() => {
-      if (projectId && !this.db.prepare('SELECT id FROM categories WHERE id=?').get(projectId)) throw new AppError('CATEGORY_MISSING', 'That project no longer exists.')
-      const changed = this.db.prepare("UPDATE notes SET kind=?,processed_at=?,task_status=?,planned_date=?,due_date=?,task_position=0,before_event_id=NULL,completed_at=NULL,project_id=?,task_ready=0,updated_at=?,revision=revision+1 WHERE id=? AND deleted_at IS NULL AND kind='inbox'").run(kind, now, kind === 'task' ? 'open' : null, null, null, kind === 'task' ? projectId : null, now, id)
+      const current = this.db.prepare("SELECT project_id AS categoryId FROM notes WHERE id=? AND deleted_at IS NULL AND kind='inbox'").get(id) as { categoryId: string | null } | undefined
+      if (!current) throw new AppError('ALREADY_FILED', 'This Inbox item has already been filed. Reload the Inbox to continue.')
+      const categoryId = requestedCategoryId === undefined ? current.categoryId : requestedCategoryId
+      if (categoryId && !this.db.prepare('SELECT id FROM categories WHERE id=?').get(categoryId)) throw new AppError('CATEGORY_MISSING', 'That category no longer exists.')
+      const changed = this.db.prepare("UPDATE notes SET kind=?,processed_at=?,task_status=?,planned_date=?,due_date=?,task_position=0,before_event_id=NULL,completed_at=NULL,project_id=?,task_ready=0,updated_at=?,revision=revision+1 WHERE id=? AND deleted_at IS NULL AND kind='inbox'").run(kind, now, kind === 'task' ? 'open' : null, null, null, categoryId, now, id)
       if (!changed.changes) throw new AppError('ALREADY_FILED', 'This Inbox item has already been filed. Reload the Inbox to continue.')
-      this.replaceItemTags(id, cleanTags, kind === 'task' ? projectId : null)
-      if (kind === 'task' && !projectId) this.db.prepare(`UPDATE notes SET project_id=(SELECT min(t.category_id) FROM note_tags nt JOIN item_tags t ON t.id=nt.tag_id WHERE nt.note_id=? AND t.category_id IS NOT NULL) WHERE id=? AND 1=(SELECT count(DISTINCT t.category_id) FROM note_tags nt JOIN item_tags t ON t.id=nt.tag_id WHERE nt.note_id=? AND t.category_id IS NOT NULL)`).run(id, id, id)
+      this.replaceItemTags(id, cleanTags, categoryId)
+      const priorityPosition = kind === 'task' ? this.nextBacklogPosition(categoryId) : 0
+      this.db.prepare('UPDATE notes SET backlog_position=? WHERE id=?').run(priorityPosition, id)
     })
     transaction(); this.changeSequence++
   }
@@ -342,7 +385,7 @@ export class Store {
     const current = this.db.prepare("SELECT planned_date,before_event_id FROM notes WHERE id=? AND kind='task' AND deleted_at IS NULL").get(id) as { planned_date: string | null; before_event_id: string | null } | undefined
     if (!current) throw new AppError('NOT_FOUND', 'This to-do no longer exists.')
     const transaction = this.db.transaction(() => {
-      this.db.prepare("UPDATE notes SET kind='inbox',processed_at=NULL,task_status=NULL,planned_date=NULL,due_date=NULL,task_position=0,before_event_id=NULL,completed_at=NULL,project_id=NULL,task_ready=0,updated_at=?,revision=revision+1 WHERE id=? AND kind='task' AND deleted_at IS NULL").run(Date.now(), id)
+      this.db.prepare("UPDATE notes SET kind='inbox',processed_at=NULL,task_status=NULL,planned_date=NULL,due_date=NULL,task_position=0,backlog_position=0,before_event_id=NULL,completed_at=NULL,task_ready=0,updated_at=?,revision=revision+1 WHERE id=? AND kind='task' AND deleted_at IS NULL").run(Date.now(), id)
       if (current.planned_date) this.compactTaskSlot(current.planned_date, current.before_event_id)
     })
     transaction(); this.changeSequence++
@@ -353,46 +396,63 @@ export class Store {
     if (!current || current.deletedAt !== null || current.kind === 'inbox') throw new AppError('NOT_FOUND', 'This item is not filed.')
     const cleanTags = normalizeTags(tags)
     const transaction = this.db.transaction(() => {
-      const project = this.db.prepare("SELECT project_id FROM notes WHERE id=? AND kind='task'").get(id) as { project_id: string | null } | undefined
-      this.replaceItemTags(id, cleanTags, project?.project_id ?? null)
+      const category = this.db.prepare('SELECT project_id AS categoryId FROM notes WHERE id=?').get(id) as { categoryId: string | null } | undefined
+      this.replaceItemTags(id, cleanTags, category?.categoryId ?? null)
       this.db.prepare('UPDATE notes SET revision=revision+1,updated_at=? WHERE id=?').run(Date.now(), id)
     })
     transaction(); this.changeSequence++
   }
 
-  private replaceItemTags(id: string, tags: string[], projectId: string | null = null) {
+  private replaceItemTags(id: string, tags: string[], categoryId: string | null = null) {
     this.db.prepare('DELETE FROM note_tags WHERE note_id=?').run(id)
     for (const name of tags) {
-      this.db.prepare('INSERT INTO item_tags(id,name,category_id) VALUES(?,?,?) ON CONFLICT(name) DO NOTHING').run(randomUUID(), name, projectId)
+      this.db.prepare('INSERT INTO item_tags(id,name,category_id) VALUES(?,?,?) ON CONFLICT(name) DO NOTHING').run(randomUUID(), name, categoryId)
       const tag = this.db.prepare('SELECT id FROM item_tags WHERE name=? COLLATE NOCASE').get(name) as { id: string }
       this.db.prepare('INSERT INTO note_tags(note_id,tag_id) VALUES(?,?)').run(id, tag.id)
     }
   }
 
-  listBacklog(input: { query?: string; cursor?: { sortAt: number; id: string }; limit?: number } = {}): { items: PlannerTask[]; nextCursor: { sortAt: number; id: string } | null; total: number } {
+  private nextBacklogPosition(categoryId: string | null) {
+    return (this.db.prepare("SELECT coalesce(max(backlog_position),-1)+1 AS position FROM notes WHERE kind='task' AND task_status='open' AND deleted_at IS NULL AND project_id IS ?").get(categoryId) as { position: number }).position
+  }
+
+  listBacklog(input: { categoryId: string | null; query?: string; tagNames?: string[]; includeUntagged?: boolean; cursor?: { priorityPosition: number; id: string }; limit?: number } = { categoryId: null }): { items: PlannerTask[]; nextCursor: { priorityPosition: number; id: string } | null; total: number; tagNames: string[] } {
     const limit = input.limit ?? 50
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new AppError('INVALID_INPUT', 'Choose a valid backlog page size.')
     const query = input.query?.trim() ?? ''
-    const where = ["n.deleted_at IS NULL", "n.kind='task'", "n.task_status='open'", 'n.task_ready=0', 'n.planned_date IS NULL']
-    const params: (string | number)[] = []
+    const where = ["n.deleted_at IS NULL", "n.kind='task'", "n.task_status='open'", 'n.task_ready=0', 'n.planned_date IS NULL', 'n.project_id IS ?']
+    const params: (string | number | null)[] = []
+    params.push(input.categoryId)
+    const tagNames = [...new Map((input.tagNames ?? []).map((name) => name.trim().replace(/\s+/g, ' ').slice(0, 40)).filter(Boolean).map((name): [string, string] => [name.toLocaleLowerCase(), name])).values()]
+    const includeUntagged = input.includeUntagged ?? false
+    const hasTagFilter = input.tagNames !== undefined || input.includeUntagged !== undefined
+    if (hasTagFilter && !tagNames.length && !includeUntagged) where.push('0=1')
+    else if (hasTagFilter && tagNames.length) {
+      const selectedTags = `EXISTS (SELECT 1 FROM note_tags nt JOIN item_tags t ON t.id=nt.tag_id WHERE nt.note_id=n.id AND t.name COLLATE NOCASE IN (${tagNames.map(() => '?').join(',')}))`
+      const untagged = 'NOT EXISTS (SELECT 1 FROM note_tags nt WHERE nt.note_id=n.id)'
+      where.push(includeUntagged ? `(${selectedTags} OR ${untagged})` : selectedTags)
+      params.push(...tagNames)
+    } else if (hasTagFilter && includeUntagged) where.push('NOT EXISTS (SELECT 1 FROM note_tags nt WHERE nt.note_id=n.id)')
     if (query) {
       where.push("(instr(lower(n.body),lower(?))>0 OR EXISTS (SELECT 1 FROM note_tags nt JOIN item_tags t ON t.id=nt.tag_id WHERE nt.note_id=n.id AND instr(lower(t.name),lower(?))>0))")
       params.push(query, query)
     }
     const base = where.join(' AND ')
     const total = (this.db.prepare(`SELECT count(*) AS count FROM notes n WHERE ${base}`).get(...params) as { count: number }).count
+    const availableTags = (this.db.prepare(`SELECT DISTINCT t.name FROM notes n JOIN note_tags nt ON nt.note_id=n.id JOIN item_tags t ON t.id=nt.tag_id
+      WHERE n.deleted_at IS NULL AND n.kind='task' AND n.task_status='open' AND n.task_ready=0 AND n.planned_date IS NULL AND n.project_id IS ? ORDER BY t.name COLLATE NOCASE`).all(input.categoryId) as { name: string }[]).map((tag) => tag.name)
     const pageWhere = [...where]
     const pageParams = [...params]
     if (input.cursor) {
-      pageWhere.push('(n.created_at<? OR (n.created_at=? AND n.id<?))')
-      pageParams.push(input.cursor.sortAt, input.cursor.sortAt, input.cursor.id)
+      pageWhere.push('(n.backlog_position>? OR (n.backlog_position=? AND n.id>?))')
+      pageParams.push(input.cursor.priorityPosition, input.cursor.priorityPosition, input.cursor.id)
     }
-    const rows = this.db.prepare(`SELECT ${NOTE_PROJECTION} ${NOTE_FROM} WHERE ${pageWhere.join(' AND ')} ORDER BY n.created_at DESC,n.id DESC LIMIT ?`)
+    const rows = this.db.prepare(`SELECT ${NOTE_PROJECTION} ${NOTE_FROM} WHERE ${pageWhere.join(' AND ')} ORDER BY n.backlog_position,n.id LIMIT ?`)
       .all(...pageParams, limit + 1) as NoteRow[]
     const hasMore = rows.length > limit
     const items = rows.slice(0, limit)
     const last = items.at(-1)
-    return { items: items.map(taskFrom), nextCursor: hasMore && last ? { sortAt: last.created_at, id: last.id } : null, total }
+    return { items: items.map(taskFrom), nextCursor: hasMore && last ? { priorityPosition: last.backlog_position, id: last.id } : null, total, tagNames: availableTags }
   }
 
   setTaskReady(id: string) {
@@ -409,10 +469,33 @@ export class Store {
     this.changeSequence++
   }
 
-  setTaskProject(id: string, projectId: string | null) {
-    if (projectId && !this.db.prepare('SELECT id FROM categories WHERE id=?').get(projectId)) throw new AppError('CATEGORY_MISSING', 'That project no longer exists.')
-    const changed = this.db.prepare("UPDATE notes SET project_id=?,updated_at=?,revision=revision+1 WHERE id=? AND kind='task' AND deleted_at IS NULL").run(projectId, Date.now(), id)
-    if (!changed.changes) throw new AppError('NOT_FOUND', 'This task no longer exists.')
+  setItemCategory(id: string, categoryId: string | null) {
+    if (categoryId && !this.db.prepare('SELECT id FROM categories WHERE id=?').get(categoryId)) throw new AppError('CATEGORY_MISSING', 'That category no longer exists.')
+    const row = this.db.prepare('SELECT kind,project_id AS categoryId FROM notes WHERE id=? AND deleted_at IS NULL').get(id) as { kind: string; categoryId: string | null } | undefined
+    if (!row) throw new AppError('NOT_FOUND', 'This item no longer exists.')
+    if (row.categoryId === categoryId) return
+    const priorityPosition = row.kind === 'task' ? this.nextBacklogPosition(categoryId) : null
+    this.db.prepare('UPDATE notes SET project_id=?,backlog_position=coalesce(?,backlog_position),updated_at=?,revision=revision+1 WHERE id=? AND deleted_at IS NULL').run(categoryId, priorityPosition, Date.now(), id)
+    this.changeSequence++
+  }
+
+  reorderBacklog(id: string, categoryId: string | null, beforeId: string | null) {
+    const item = this.db.prepare("SELECT id FROM notes WHERE id=? AND kind='task' AND task_status='open' AND deleted_at IS NULL AND project_id IS ?").get(id, categoryId) as { id: string } | undefined
+    if (!item) throw new AppError('INVALID_REORDER', 'This to-do is no longer in that category.')
+    const rows = this.db.prepare("SELECT id FROM notes WHERE kind='task' AND task_status='open' AND deleted_at IS NULL AND project_id IS ? ORDER BY backlog_position,id").all(categoryId) as { id: string }[]
+    const ids = rows.map((row) => row.id)
+    const sourceIndex = ids.indexOf(id)
+    if (beforeId === id) return
+    const targetIndex = beforeId === null ? ids.length : ids.indexOf(beforeId)
+    if (sourceIndex < 0 || targetIndex < 0) throw new AppError('INVALID_REORDER', 'The target to-do is no longer in that category. Refresh and try again.')
+    ids.splice(sourceIndex, 1)
+    const insertAt = beforeId === null ? ids.length : ids.indexOf(beforeId)
+    ids.splice(insertAt, 0, id)
+    this.db.transaction(() => {
+      const update = this.db.prepare('UPDATE notes SET backlog_position=?,updated_at=?,revision=revision+1 WHERE id=?')
+      const now = Date.now()
+      ids.forEach((taskId, position) => update.run(position, now, taskId))
+    })()
     this.changeSequence++
   }
 
@@ -464,9 +547,16 @@ export class Store {
     rows.forEach((row, position) => update.run(position, row.id))
   }
 
-  savePlannerEvent(input: { id?: string; title: string; startAt: number; endAt: number; allDay: boolean }): PlannerEvent {
+  savePlannerEvent(input: PlannerEventInput): PlannerEvent {
     const title = input.title.trim()
     if (!title || title.length > 120 || !Number.isSafeInteger(input.startAt) || !Number.isSafeInteger(input.endAt) || input.endAt <= input.startAt) throw new AppError('INVALID_INPUT', 'Enter a title and valid meeting start and end times.')
+    if (input.recurrence) {
+      const occurrences = meetingOccurrences(input.startAt, input.endAt, input.recurrence)
+      return this.db.transaction(() => {
+        const saved = occurrences.map((times, index) => this.savePlannerEvent({ ...input, ...times, id: index === 0 ? input.id : undefined, recurrence: undefined }))
+        return saved[0]!
+      })()
+    }
     const now = Date.now()
     const id = input.id ?? randomUUID()
     const save = this.db.transaction(() => {
@@ -486,7 +576,7 @@ export class Store {
     return eventFrom(row)
   }
 
-  updatePlannerEvent(input: { id: string; title: string; startAt: number; endAt: number; allDay: boolean }) {
+  updatePlannerEvent(input: PlannerEventInput & { id: string }) {
     if (!this.db.prepare('SELECT id FROM planner_events WHERE id=?').get(input.id)) throw new AppError('NOT_FOUND', 'This scheduled meeting no longer exists.')
     return this.savePlannerEvent(input)
   }
@@ -539,18 +629,21 @@ export class Store {
     return updated
   }
 
-  updateItem(id: string, expectedRevision: number, body: string, tags: string[]) {
+  updateItem(id: string, expectedRevision: number, body: string, tags: string[], requestedCategoryId?: string | null) {
     const current = this.getNote(id)
     if (!current || current.deletedAt !== null) throw new AppError('NOT_FOUND', 'This item no longer exists.')
     if (current.revision !== expectedRevision) throw new AppError('REVISION_CONFLICT', 'This item changed elsewhere. Reload it before saving.')
     if ([...body].length > 50_000) throw new AppError('NOTE_TOO_LONG', 'Notes can contain up to 50,000 characters.')
+    const categoryId = requestedCategoryId === undefined ? current.categoryId : requestedCategoryId
+    if (categoryId && !this.db.prepare('SELECT id FROM categories WHERE id=?').get(categoryId)) throw new AppError('CATEGORY_MISSING', 'That category no longer exists.')
     const cleanTags = normalizeTags(tags)
     const now = Date.now()
     const transaction = this.db.transaction(() => {
-      const changed = this.db.prepare('UPDATE notes SET body=?,updated_at=?,revision=revision+1 WHERE id=? AND revision=? AND deleted_at IS NULL').run(body.replace(/\r\n?/g, '\n'), now, id, expectedRevision)
+      const movedTask = current.kind === 'task' && current.categoryId !== categoryId
+      const priorityPosition = movedTask ? this.nextBacklogPosition(categoryId) : null
+      const changed = this.db.prepare('UPDATE notes SET body=?,project_id=?,backlog_position=coalesce(?,backlog_position),updated_at=?,revision=revision+1 WHERE id=? AND revision=? AND deleted_at IS NULL').run(body.replace(/\r\n?/g, '\n'), categoryId, priorityPosition, now, id, expectedRevision)
       if (!changed.changes) throw new AppError('REVISION_CONFLICT', 'This item changed elsewhere. Reload it before saving.')
-      const project = this.db.prepare("SELECT project_id FROM notes WHERE id=? AND kind='task'").get(id) as { project_id: string | null } | undefined
-      this.replaceItemTags(id, cleanTags, project?.project_id ?? null)
+      this.replaceItemTags(id, cleanTags, categoryId)
       this.syncSearch(id)
     })
     transaction()
@@ -567,7 +660,23 @@ export class Store {
   }
 
   trash(ids: string[]) { this.changeRows(ids, 'UPDATE notes SET deleted_at=?,updated_at=?,revision=revision+1 WHERE id=? AND deleted_at IS NULL', Date.now(), Date.now()) }
-  restore(ids: string[]) { this.changeRows(ids, 'UPDATE notes SET deleted_at=NULL,updated_at=?,revision=revision+1 WHERE id=? AND deleted_at IS NOT NULL', Date.now()) }
+  restore(ids: string[]) {
+    const now = Date.now()
+    this.db.transaction(() => {
+      const select = this.db.prepare('SELECT id,kind,project_id,backlog_position FROM notes WHERE id=? AND deleted_at IS NOT NULL')
+      const restore = this.db.prepare('UPDATE notes SET deleted_at=NULL,updated_at=?,revision=revision+1 WHERE id=? AND deleted_at IS NOT NULL')
+      for (const id of [...new Set(ids)]) {
+        const row = select.get(id) as { id: string; kind: string; project_id: string | null; backlog_position: number } | undefined
+        if (!row) continue
+        if (row.kind === 'task') {
+          const collision = this.db.prepare("SELECT 1 FROM notes WHERE kind='task' AND task_status='open' AND deleted_at IS NULL AND project_id IS ? AND backlog_position=?").get(row.project_id, row.backlog_position)
+          if (collision) this.db.prepare('UPDATE notes SET backlog_position=? WHERE id=?').run(this.nextBacklogPosition(row.project_id), id)
+        }
+        restore.run(now, id)
+      }
+    })()
+    this.changeSequence++
+  }
   permanentlyDelete(ids: string[]) {
     const transaction = this.db.transaction(() => { for (const id of ids) { this.db.prepare('DELETE FROM note_search WHERE note_id=?').run(id); this.db.prepare('DELETE FROM notes WHERE id=? AND deleted_at IS NOT NULL').run(id) } })
     transaction(); this.changeSequence++
@@ -587,12 +696,12 @@ export class Store {
   getDraftText(ids: string[]) { return ids.map((id) => this.getNote(id)).filter((n): n is NonNullable<typeof n> => Boolean(n)).map((n) => n.body).join('\n\n') }
 
   taskExportMetadata(ids: string[]) {
-    const metadata = new Map<string, { projectName: string | null; ready: boolean; plannedDate: string | null }>()
+    const metadata = new Map<string, { categoryName: string | null; ready: boolean; plannedDate: string | null }>()
     for (let offset = 0; offset < ids.length; offset += 500) {
       const batch = ids.slice(offset, offset + 500)
       if (!batch.length) continue
-      const rows = this.db.prepare(`SELECT n.id,c.name AS project_name,n.task_ready,n.planned_date FROM notes n LEFT JOIN categories c ON c.id=n.project_id WHERE n.kind='task' AND n.id IN (${batch.map(() => '?').join(',')})`).all(...batch) as { id: string; project_name: string | null; task_ready: number; planned_date: string | null }[]
-      for (const row of rows) metadata.set(row.id, { projectName: row.project_name, ready: Boolean(row.task_ready), plannedDate: row.planned_date })
+      const rows = this.db.prepare(`SELECT n.id,c.name AS category_name,n.task_ready,n.planned_date FROM notes n LEFT JOIN categories c ON c.id=n.project_id WHERE n.kind='task' AND n.id IN (${batch.map(() => '?').join(',')})`).all(...batch) as { id: string; category_name: string | null; task_ready: number; planned_date: string | null }[]
+      for (const row of rows) metadata.set(row.id, { categoryName: row.category_name, ready: Boolean(row.task_ready), plannedDate: row.planned_date })
     }
     return metadata
   }
@@ -612,7 +721,7 @@ export class Store {
       const required = ['notes', 'drafts', 'app_state', 'schema_migrations', 'note_search', ...(version.version && version.version >= 3 ? ['legacy_meeting_sessions', 'planner_events', 'item_tags', 'note_tags'] : ['meetings']), ...(version.version && version.version >= 4 ? ['item_images', 'capture_draft_images'] : []), ...(version.version && version.version >= 5 ? ['categories'] : [])]
       const tables = new Set((database.prepare("SELECT name FROM sqlite_master WHERE type IN ('table','view')").all() as { name: string }[]).map((row) => row.name))
       if (required.some((name) => !tables.has(name))) throw new AppError('DB_INVALID_SCHEMA', 'The selected file is not a complete notable backup.')
-       if (![2, 3, 4, 5, 6, 7].includes(version.version ?? 0)) throw new AppError(version.version && version.version > 7 ? 'DB_NEWER_VERSION' : 'DB_INVALID_SCHEMA', 'This backup has an unsupported notable schema.')
+      if (![2, 3, 4, 5, 6, 7, 8].includes(version.version ?? 0)) throw new AppError(version.version && version.version > 8 ? 'DB_NEWER_VERSION' : 'DB_INVALID_SCHEMA', 'This backup has an unsupported notable schema.')
       if ((database.pragma('foreign_key_check') as unknown[]).length) throw new AppError('DB_CORRUPT', 'The selected backup contains invalid note links.')
     } finally { if (path) database.close() }
   }

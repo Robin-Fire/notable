@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { DragEndEvent } from '@dnd-kit/core'
 import { ArrowLeft, ArrowRight, ChevronDown, Info, PanelLeftClose, PanelLeftOpen, Plus, RotateCcw } from 'lucide-react'
-import type { DeletedPlannerEvent, PlannerEvent, PlannerTask } from '../../shared/contracts'
+import type { DeletedPlannerEvent, PlannerEvent, PlannerEventInput, PlannerTask } from '../../shared/contracts'
 import { addLocalDays, eventOverlapsLocalDay, fromLocalISODate, mondayISO, toLocalISODate } from '../../shared/plannerDates'
 import { resolvePlannerDrop } from '../../shared/plannerDrop'
 import { Kanban, KanbanBoard, KanbanColumnContent } from '../components/reui/kanban'
@@ -91,7 +91,7 @@ export function CalenbanView() {
     document.querySelector<HTMLElement>(`[data-day="${day}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'start' })
   }
 
-  async function saveEvent(input: { id?: string; title: string; startAt: number; endAt: number; allDay: boolean }): Promise<string | null> {
+  async function saveEvent(input: PlannerEventInput): Promise<string | null> {
     try {
       if (input.id) getValue(await window.notable.planner.updateEvent({ ...input, id: input.id }))
       else getValue(await window.notable.planner.createEvent(input))
@@ -149,12 +149,10 @@ export function CalenbanView() {
           <KanbanBoard>{days.map((day) => <PlannerDayColumn key={day} day={day} today={today} days={days} dayEvents={eventsByDay.get(day) ?? []} laneTasks={laneTasks} onDeleteTask={deleteTask} onOpen={setDetailTask} onEditMeeting={setEventDialog} onDeleteMeeting={removeEvent} onAddMeeting={startNewEvent} />)}</KanbanBoard>
         </div>
       </Kanban>
-      {!loading && !tasks.length && !events.length && <div className="planner-empty-note">Your calendar is clear. Choose tasks from Backlog when you're ready to plan them.</div>}
     </>}
     {eventDialog && <EventDialog event={eventDialog} initialDate={eventDate} onClose={() => setEventDialog(null)} onSave={saveEvent} />}
     {detailTask && <TaskDetailDialog task={detailTask} suggestions={tags} onClose={() => setDetailTask(null)} onChanged={() => setMutationError('')} />}
     {deletedEvent && <div className="planner-undo-toast" role="status"><RotateCcw size={15} /><span>Meeting removed</span><button type="button" onClick={() => void undoDeleteEvent()}>Undo</button></div>}
-    <div className="calendar-source-note">Outlook connection is not configured yet. These meetings are stored locally in Notable.</div>
   </section>
 }
 

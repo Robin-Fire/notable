@@ -7,7 +7,7 @@ import os from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { Store } from './storage/database'
 import { SettingsStore } from './settings'
-import { CaptureSubmitSchema, CategoryNameSchema, ClassifyItemSchema, DeletedPlannerEventSchema, IdsSchema, InboxPageSchema, NoteFilterSchema, NoteUpdateSchema, PlannerBacklogQuerySchema, PlannerEventInputSchema, PlannerMoveSchema, PlannerProjectSchema, PlannerQuerySchema, PlannerReadySchema, SettingsSchema, TagNameSchema, TagUpdateSchema } from '../shared/contracts'
+import { CaptureSubmitSchema, CategoryNameSchema, ClassifyItemSchema, DeletedPlannerEventSchema, IdsSchema, InboxPageSchema, ItemCategorySchema, NoteFilterSchema, NoteUpdateSchema, PlannerBacklogQuerySchema, PlannerBacklogReorderSchema, PlannerEventInputSchema, PlannerMoveSchema, PlannerQuerySchema, PlannerReadySchema, SettingsSchema, TagNameSchema, TagUpdateSchema } from '../shared/contracts'
 import { AppError, messageOf } from '../shared/errors'
 
 const hasSingleInstance = app.requestSingleInstanceLock()
@@ -261,22 +261,23 @@ function registerIpc() {
   roleHandler('updates:install', 'notes', () => { if (updateStatus.status === 'downloaded') autoUpdater.quitAndInstall(); })
   roleHandler('capture:get-state', 'capture', () => {
     const draft = store?.getCaptureDraft()
-    return { body: draft?.body ?? '', images: draft?.images ?? [], generation: draft?.generation ?? draftGeneration, revision: draft?.revision ?? 0, shortcut: settings.get().shortcut, theme: settings.get().theme, available: Boolean(store) }
+    return { body: draft?.body ?? '', images: draft?.images ?? [], generation: draft?.generation ?? draftGeneration, revision: draft?.revision ?? 0, categoryId: draft?.categoryId ?? null, shortcut: settings.get().shortcut, theme: settings.get().theme, available: Boolean(store) }
   })
+  roleHandler('capture:categories', 'capture', () => requireStore().taxonomy().categories)
   roleHandler('capture:update-draft', 'capture', (_event, raw) => {
-    const input = raw as { body: string; generation: number; revision: number }
-    if (typeof input.body !== 'string' || [...input.body].length > 50_000 || input.body.length > 200_000 || !Number.isInteger(input.generation) || !Number.isInteger(input.revision)) throw new AppError('INVALID_INPUT', 'This draft is too large or invalid.')
-    const next = requireStore().updateDraft(input.body, input.generation, input.revision)
+    const input = raw as { body: string; generation: number; revision: number; categoryId?: string | null }
+    if (typeof input.body !== 'string' || [...input.body].length > 50_000 || input.body.length > 200_000 || !Number.isInteger(input.generation) || !Number.isInteger(input.revision) || (input.categoryId !== undefined && input.categoryId !== null && !/^[0-9a-f-]{36}$/i.test(input.categoryId))) throw new AppError('INVALID_INPUT', 'This draft is too large or invalid.')
+    const next = requireStore().updateDraft(input.body, input.generation, input.revision, input.categoryId ?? null)
     return { revision: next }
   })
   roleHandler('capture:flush-before-quit', 'capture', (_event, raw) => {
-    const input = raw as { body: string; generation: number; revision: number }
-    if (typeof input.body !== 'string' || [...input.body].length > 50_000 || input.body.length > 100_000 || !Number.isInteger(input.generation) || input.generation < 0 || !Number.isInteger(input.revision) || input.revision < 0) throw new AppError('INVALID_INPUT', 'This draft is too large or invalid.')
-    return { revision: requireStore().updateDraft(input.body, input.generation, input.revision) }
+    const input = raw as { body: string; generation: number; revision: number; categoryId?: string | null }
+    if (typeof input.body !== 'string' || [...input.body].length > 50_000 || input.body.length > 100_000 || !Number.isInteger(input.generation) || input.generation < 0 || !Number.isInteger(input.revision) || input.revision < 0 || (input.categoryId !== undefined && input.categoryId !== null && !/^[0-9a-f-]{36}$/i.test(input.categoryId))) throw new AppError('INVALID_INPUT', 'This draft is too large or invalid.')
+    return { revision: requireStore().updateDraft(input.body, input.generation, input.revision, input.categoryId ?? null) }
   })
   roleHandler('capture:submit', 'capture', (_event, raw) => {
     const input = CaptureSubmitSchema.parse(raw)
-    const id = requireStore().submitCapture(input.requestId, input.generation, input.body)
+    const id = requireStore().submitCapture(input.requestId, input.generation, input.body, input.categoryId ?? null)
     broadcastChange()
     setImmediate(() => void makeAutomaticBackup())
     return { id }
@@ -305,11 +306,12 @@ function registerIpc() {
   roleHandler('notes:image', 'notes', (_event, id) => requireStore().getItemImage(String(id)))
   roleHandler('notes:update', 'notes', (_event, raw) => { const input = NoteUpdateSchema.parse(raw); const result = requireStore().updateNote(input.id, input.expectedRevision, input.body); broadcastChange('notes'); return result })
   roleHandler('notes:update-item', 'notes', (_event, raw) => {
-    const input = raw as { id?: unknown; expectedRevision?: unknown; body?: unknown; tags?: unknown }
-    if (typeof input?.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(input.id) || !Number.isInteger(input.expectedRevision) || typeof input.body !== 'string' || [...input.body].length > 50_000 || !Array.isArray(input.tags) || input.tags.length > 20 || input.tags.some((tag) => typeof tag !== 'string' || tag.length > 80)) throw new AppError('INVALID_INPUT', 'This item is too large or invalid.')
-    const result = requireStore().updateItem(input.id, input.expectedRevision as number, input.body, input.tags as string[])
+    const input = raw as { id?: unknown; expectedRevision?: unknown; body?: unknown; tags?: unknown; categoryId?: unknown }
+    if (typeof input?.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(input.id) || !Number.isInteger(input.expectedRevision) || typeof input.body !== 'string' || [...input.body].length > 50_000 || !Array.isArray(input.tags) || input.tags.length > 20 || input.tags.some((tag) => typeof tag !== 'string' || tag.length > 80) || (input.categoryId !== undefined && input.categoryId !== null && (typeof input.categoryId !== 'string' || !/^[0-9a-f-]{36}$/i.test(input.categoryId)))) throw new AppError('INVALID_INPUT', 'This item is too large or invalid.')
+    const result = requireStore().updateItem(input.id, input.expectedRevision as number, input.body, input.tags as string[], input.categoryId as string | null | undefined)
     broadcastChange(); return result
   })
+  roleHandler('notes:set-category', 'notes', (_event, raw) => { const input = ItemCategorySchema.parse(raw); requireStore().setItemCategory(input.id, input.categoryId); broadcastChange() })
   roleHandler('notes:set-tags', 'notes', (_event, raw) => { const input = raw as { id?: unknown; tags?: unknown }; if (typeof input?.id !== 'string' || !Array.isArray(input.tags) || input.tags.length > 20 || input.tags.some((tag) => typeof tag !== 'string' || tag.length > 80)) throw new AppError('INVALID_INPUT', 'Choose up to 20 valid tags.'); requireStore().setItemTags(input.id, input.tags as string[]); broadcastChange() })
   roleHandler('notes:trash', 'notes', (_event, raw) => { const ids = IdsSchema.parse(raw); requireStore().trash(ids); broadcastChange() })
   roleHandler('notes:restore', 'notes', (_event, raw) => { const ids = IdsSchema.parse(raw); requireStore().restore(ids); broadcastChange() })
@@ -330,11 +332,11 @@ function registerIpc() {
   roleHandler('planner:inbox', 'notes', (_event, raw) => { const input = InboxPageSchema.parse(raw ?? {}); return requireStore().listInbox(input.cursor, input.limit) })
   roleHandler('planner:inbox-count', 'notes', () => requireStore().inboxCount())
   roleHandler('planner:unfile', 'notes', (_event, raw) => { const id = IdsSchema.parse([raw])[0]!; requireStore().unfilePlannerTask(id); broadcastChange() })
-  roleHandler('planner:classify', 'notes', (_event, raw) => { const input = ClassifyItemSchema.parse(raw); requireStore().classifyItem(input.id, input.kind, input.tags, input.projectId); broadcastChange() })
+  roleHandler('planner:classify', 'notes', (_event, raw) => { const input = ClassifyItemSchema.parse(raw); requireStore().classifyItem(input.id, input.kind, input.tags, input.categoryId); broadcastChange() })
   roleHandler('planner:tasks', 'notes', (_event, raw) => { const input = PlannerQuerySchema.parse(raw); return requireStore().listPlanner(input.from, input.to) })
   roleHandler('planner:backlog', 'notes', (_event, raw) => { const input = PlannerBacklogQuerySchema.parse(raw ?? {}); return requireStore().listBacklog(input) })
   roleHandler('planner:ready', 'notes', (_event, raw) => { const input = PlannerReadySchema.parse(raw); requireStore().setTaskReady(input.id); broadcastChange('planner') })
-  roleHandler('planner:project', 'notes', (_event, raw) => { const input = PlannerProjectSchema.parse(raw); requireStore().setTaskProject(input.id, input.projectId); broadcastChange('planner') })
+  roleHandler('planner:backlog-reorder', 'notes', (_event, raw) => { const input = PlannerBacklogReorderSchema.parse(raw); requireStore().reorderBacklog(input.id, input.categoryId, input.beforeId); broadcastChange() })
   roleHandler('planner:move', 'notes', (_event, raw) => { const input = PlannerMoveSchema.parse(raw); requireStore().movePlannerTask(input.id, input.plannedDate, input.beforeEventId, input.beforeId); broadcastChange('planner') })
   roleHandler('planner:event:create', 'notes', (_event, raw) => { const input = PlannerEventInputSchema.parse(raw); const event = requireStore().savePlannerEvent(input); broadcastChange('planner'); return event })
   roleHandler('planner:event:update', 'notes', (_event, raw) => { const input = PlannerEventInputSchema.parse(raw); if (!input.id) throw new AppError('INVALID_INPUT', 'Choose a meeting to update.'); const event = requireStore().updatePlannerEvent({ ...input, id: input.id }); broadcastChange('planner'); return event })
@@ -443,7 +445,7 @@ async function exportData(raw: unknown) {
     const task = taskMetadata.get(row.id)
     const effectivePlannedDate = plannedDate ?? task?.plannedDate ?? null
     const planState = kind !== 'task' ? '' : effectivePlannedDate ? `Planned ${effectivePlannedDate}` : task?.ready ? 'Ready' : 'Backlog'
-    const metadata = [kind === 'task' ? `To-do${taskStatus === 'done' ? ' · Done' : ''}` : kind === 'inbox' ? 'Inbox' : 'Note', task?.projectName ? `Project ${task.projectName}` : '', planState, ...tags.map((tag) => `#${tag}`), dueDate ? `Due ${dueDate}` : ''].filter(Boolean).join(' · ')
+    const metadata = [kind === 'task' ? `To-do${taskStatus === 'done' ? ' · Done' : ''}` : kind === 'inbox' ? 'Inbox' : 'Note', task?.categoryName ? `Category ${task.categoryName}` : '', planState, ...tags.map((tag) => `#${tag}`), dueDate ? `Due ${dueDate}` : ''].filter(Boolean).join(' · ')
     const images = db.getNote(row.id)?.images ?? []
     const imageText = images.map((image, index) => `![Image ${index + 1}](${db.getItemImage(image.id)})`).join('\n\n')
     const body = [metadata, row.body, imageText].filter(Boolean).join('\n\n')

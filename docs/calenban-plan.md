@@ -5,9 +5,9 @@ Status: implemented. This document describes the current task workflow and the d
 ## Product decisions
 
 - Every capture enters Inbox first. Each Inbox item is filed as either a reference note or a to-do.
-- Categories are projects. A to-do can be assigned to one project or left unassigned.
+- Categories can be assigned directly to Inbox captures, reference notes, and to-dos. Items without a category remain Unassigned.
 - Tags are subareas. A tag belongs to one category at a time, or to no category. Assigning a tag to an item does not change the tag’s category.
-- To-dos start in Backlog. Users choose which tasks to promote to Ready in Plan.
+- To-dos start in Backlog with a saved priority order per category. Backlog, category pages, and tag pages share that order. Users choose which tasks to promote to Ready in Plan; Plan ordering stays separate.
 - Plan has a Ready tray and date columns. Tasks move between Plan slots only through drag and drop.
 - Tasks do not have a completion checkbox. Delete finished work to Trash; restoring a deleted task puts it back in Backlog.
 - Meetings are entered locally. Outlook sign-in, sync, and permissions are not configured.
@@ -16,8 +16,8 @@ Status: implemented. This document describes the current task workflow and the d
 ## User workflow
 
 1. Capture a thought from the floating capture window or global shortcut. Save puts it in Inbox.
-2. File an Inbox item as a note or to-do. Add tags and choose a project for a to-do when appropriate.
-3. Reference notes appear in All notes. To-dos appear in Backlog, grouped by project.
+2. Choose a category during capture or in Inbox. File the item as a note or to-do and select category tags with one click.
+3. Reference notes and to-dos appear in All items. Category pages include tagged and untagged items; Backlog groups to-dos by category and lets users filter with tag pills.
 4. Use Add to Ready on a Backlog task to put it in Plan’s Ready tray.
 5. Drag tasks between Ready and date or meeting slots. Use the task menu to delete a task. Open a task to edit its text and tags, return it to Inbox, or move it to Trash.
 6. Add meetings manually with a title, date, start/end time, or all-day setting. Edit or remove them from their compact calendar rows.
@@ -32,21 +32,21 @@ The local Kanban composition in `src/renderer/components/reui/kanban.tsx` uses d
 
 ## Data and migration
 
-The SQLite schema is version 7. Active tasks have a project, a Ready flag, an optional planned date, a task order, and an optional same-day meeting anchor. Tags are globally unique and each tag record has one category assignment; changing a task’s project does not move or recategorize its tags.
+The SQLite schema is version 8. Items use one direct category assignment. Active tasks have a category, a Ready flag, an optional planned date, a Plan slot order, a separate category priority rank, and an optional same-day meeting anchor. Tags are globally unique and each tag record has one category assignment; changing an item’s category does not move or recategorize its tags.
 
-The v7 migration moves tasks previously marked complete into Trash and resets their task state. Restoring one makes it an open Backlog task. A pre-migration SQLite backup is retained automatically. Text and Markdown exports include each task’s project and Backlog, Ready, or planned state. SQLite backups remain the full-fidelity recovery format.
+The v7 migration moves tasks previously marked complete into Trash and resets their task state. The v8 migration backfills unambiguous categories from legacy tag assignments and initializes category priority from the existing Backlog order. Restoring a task preserves its category and priority when available. A pre-migration SQLite backup is retained automatically. Text and Markdown exports include each task’s category and Backlog, Ready, or planned state. SQLite backups remain the full-fidelity recovery format.
 
-Captures are created as Inbox items and do not attach to an active meeting. Notes and tasks retain their note IDs, revisions, body text, timestamps, and Trash behavior. V3 introduced the task and tag tables; V5 added categories and tag colors; V6 added project and Ready fields. The old `meetings` table was renamed to `legacy_meeting_sessions`, preserving historical note associations and labels.
+Captures are created as Inbox items and do not attach to an active meeting. Notes and tasks retain their note IDs, revisions, body text, timestamps, and Trash behavior. V3 introduced the task and tag tables; V5 added categories and tag colors; V6 added the category and Ready fields. The old `meetings` table was renamed to `legacy_meeting_sessions`, preserving historical note associations and labels.
 
 ## Main implementation points
 
-- `src/main/storage/database.ts`: schema migrations, Inbox classification, tags and categories, paginated Backlog, task ordering, event CRUD, and backup compatibility.
+- `src/main/storage/database.ts`: schema migrations, category assignment, Inbox classification, tags and categories, priority-ordered paginated Backlog, task ordering, event CRUD, and backup compatibility.
 - `src/shared/contracts.ts`, `src/preload/index.ts`, and `src/main/index.ts`: validated IPC surface for Inbox, Backlog, Plan, and export operations.
 - `src/renderer/inbox/InboxView.tsx`: Inbox triage, text editing entry point, tags, and note/to-do filing.
-- `src/renderer/backlog/BacklogView.tsx`: project grouping, server-side search, pagination, and promotion to Ready.
+- `src/renderer/backlog/BacklogView.tsx`: category grouping, tag-pill filters, server-side search, per-category pagination and reordering, and promotion to Ready.
 - `src/renderer/calenban/CalenbanView.tsx`: Plan view, mixed meeting/task sequence, manual events, and drag-and-drop task movement.
 - `src/renderer/components/reui/kanban.tsx`: Kanban primitives backed by dnd-kit.
-- `src/renderer/notes/NotesApp.tsx` and `src/renderer/styles.css`: navigation, tag pages, filters, and shared layout styling.
+- `src/renderer/notes/NotesApp.tsx` and `src/renderer/styles.css`: All items, category and tag pages, filters, priority reordering, and shared layout styling.
 
 ## Follow-up: Outlook calendar integration
 
@@ -58,11 +58,13 @@ Provider events need stable occurrence IDs because task anchors refer to event o
 
 - Captured items remain in Inbox until classified, and to-dos appear in Backlog.
 - Backlog search matches task text and tags across all pages; loading older tasks does not duplicate or omit rows.
-- Changing a task’s project leaves shared tag categories unchanged. Moving a tag between categories does not move associated tasks.
+- Category pages show items assigned directly to the category, including items with no tags.
+- Backlog filters match any selected tag, avoid duplicate tasks with multiple tags, and include untagged tasks when **No tag** is selected.
+- Reordering a to-do in Backlog or a category/tag page updates the same category priority order; Plan movement does not change it.
 - Adding tasks to Ready appends them in order; dragging Ready tasks does not reorder Backlog tasks.
 - The Ready tray is visible on first opening Plan, and its hidden toggle shows the count.
 - Plan cards have a drag handle and a delete menu; moving tasks between Plan slots uses drag and drop.
 - Older completed tasks move to Trash during migration and can be restored as Backlog tasks.
-- Text/Markdown exports preserve task project and workflow state; SQLite backup and restore preserve all data.
+- Text/Markdown exports preserve task category and workflow state; SQLite backup and restore preserve all data.
 - Removing or moving a meeting keeps anchored tasks on their planned date.
 - Outlook is clearly shown as unconfigured while local meetings remain usable.

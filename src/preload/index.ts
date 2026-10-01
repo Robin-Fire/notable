@@ -10,7 +10,7 @@ const api: Omit<NotableApi, 'capture'> = {
   },
   notes: {
     list: (filter) => ipcRenderer.invoke('notes:list', filter), tags: () => ipcRenderer.invoke('notes:tags'), taxonomy: () => ipcRenderer.invoke('notes:taxonomy'), createCategory: (name) => ipcRenderer.invoke('notes:category:create', name), createTag: (input) => ipcRenderer.invoke('notes:tag:create', input), updateTag: (input) => ipcRenderer.invoke('notes:tag:update', input), get: (id) => ipcRenderer.invoke('notes:get', id), image: (id) => ipcRenderer.invoke('notes:image', id),
-    update: (input) => ipcRenderer.invoke('notes:update', input), updateItem: (input) => ipcRenderer.invoke('notes:update-item', input), trash: (ids) => ipcRenderer.invoke('notes:trash', ids),
+    update: (input) => ipcRenderer.invoke('notes:update', input), updateItem: (input) => ipcRenderer.invoke('notes:update-item', input), setCategory: (input) => ipcRenderer.invoke('notes:set-category', input), trash: (ids) => ipcRenderer.invoke('notes:trash', ids),
     setTags: (input) => ipcRenderer.invoke('notes:set-tags', input),
     restore: (ids) => ipcRenderer.invoke('notes:restore', ids), deletePermanently: (ids) => ipcRenderer.invoke('notes:delete-permanently', ids),
     copy: (ids) => ipcRenderer.invoke('notes:copy', ids),
@@ -20,7 +20,7 @@ const api: Omit<NotableApi, 'capture'> = {
   planner: {
     inbox: (input) => ipcRenderer.invoke('planner:inbox', input ?? {}), inboxCount: () => ipcRenderer.invoke('planner:inbox-count'), unfile: (id) => ipcRenderer.invoke('planner:unfile', id), classify: (input) => ipcRenderer.invoke('planner:classify', input),
     tasks: (from, to) => ipcRenderer.invoke('planner:tasks', { from, to }), move: (input) => ipcRenderer.invoke('planner:move', input),
-    backlog: (input) => ipcRenderer.invoke('planner:backlog', input ?? {}), setReady: (input) => ipcRenderer.invoke('planner:ready', input), setProject: (input) => ipcRenderer.invoke('planner:project', input),
+    backlog: (input) => ipcRenderer.invoke('planner:backlog', input ?? {}), setReady: (input) => ipcRenderer.invoke('planner:ready', input), reorderBacklog: (input) => ipcRenderer.invoke('planner:backlog-reorder', input),
     createEvent: (input) => ipcRenderer.invoke('planner:event:create', input), updateEvent: (input) => ipcRenderer.invoke('planner:event:update', input),
     deleteEvent: (id) => ipcRenderer.invoke('planner:event:delete', id), undoDeleteEvent: (snapshot) => ipcRenderer.invoke('planner:event:undo-delete', snapshot),
     onChanged: (callback) => { const listener = (_event: Electron.IpcRendererEvent, seq: number) => callback(seq); ipcRenderer.on('planner:changed', listener); return () => ipcRenderer.removeListener('planner:changed', listener) },

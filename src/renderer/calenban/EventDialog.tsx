@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { Check, Clock3 } from 'lucide-react'
-import type { PlannerEvent } from '../../shared/contracts'
+import type { PlannerEvent, PlannerEventInput } from '../../shared/contracts'
+import { addLocalDays } from '../../shared/plannerDates'
+import type { MeetingRecurrence } from '../../shared/meetingRecurrence'
 const localInput = (timestamp: number) => new Date(timestamp - new Date(timestamp).getTimezoneOffset() * 60_000).toISOString().slice(0, 16)
 const dateInput = (isoDate: string) => `${isoDate}T09:00`
 
@@ -8,13 +10,17 @@ export function EventDialog({ event, initialDate, onClose, onSave }: {
   event: PlannerEvent | 'new'
   initialDate: string
   onClose: () => void
-  onSave: (input: { id?: string; title: string; startAt: number; endAt: number; allDay: boolean }) => Promise<string | null>
+  onSave: (input: PlannerEventInput) => Promise<string | null>
 }) {
   const [title, setTitle] = useState(event === 'new' ? '' : event.title)
   const [start, setStart] = useState(event === 'new' ? dateInput(initialDate) : localInput(event.startAt))
   const [end, setEnd] = useState(event === 'new' ? `${initialDate}T09:30` : localInput(event.endAt))
   const [allDay, setAllDay] = useState(event !== 'new' && event.allDay)
   const [error, setError] = useState('')
+  const [frequency, setFrequency] = useState<MeetingRecurrence['frequency'] | 'none'>('none')
+  const [until, setUntil] = useState(() => addLocalDays(start.slice(0, 10), 90))
+  const [saving, setSaving] = useState(false)
+  const savingLock = useRef(false)
   const dialogRef = useRef<HTMLFormElement>(null)
   const titleRef = useRef<HTMLInputElement>(null)
   const previousFocus = useRef<HTMLElement | null>(document.activeElement instanceof HTMLElement ? document.activeElement : null)
@@ -25,9 +31,9 @@ export function EventDialog({ event, initialDate, onClose, onSave }: {
   }, [])
 
   function containFocus(keyEvent: KeyboardEvent<HTMLFormElement>) {
-    if (keyEvent.key === 'Escape') { keyEvent.preventDefault(); onClose(); return }
+    if (keyEvent.key === 'Escape') { keyEvent.preventDefault(); if (!savingLock.current) onClose(); return }
     if (keyEvent.key !== 'Tab' || !dialogRef.current) return
-    const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>('input:not(:disabled), button:not(:disabled)')]
+    const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>('input:not(:disabled), select:not(:disabled), button:not(:disabled)')]
     const first = focusable[0], last = focusable.at(-1)
     if (keyEvent.shiftKey && document.activeElement === first) { keyEvent.preventDefault(); last?.focus() }
     else if (!keyEvent.shiftKey && document.activeElement === last) { keyEvent.preventDefault(); first?.focus() }
@@ -35,6 +41,7 @@ export function EventDialog({ event, initialDate, onClose, onSave }: {
 
   async function submit(formEvent: FormEvent) {
     formEvent.preventDefault()
+    if (savingLock.current) return
     setError('')
     const startDate = new Date(start)
     if (!Number.isFinite(startDate.getTime())) { setError('Choose a valid meeting start.'); return }
@@ -48,19 +55,26 @@ export function EventDialog({ event, initialDate, onClose, onSave }: {
       endAt = next.getTime()
     }
     if (!Number.isFinite(endAt) || endAt <= startAt) { setError('End time must be after start time.'); return }
-    const saveError = await onSave({ ...(event === 'new' ? {} : { id: event.id }), title, startAt, endAt, allDay })
-    if (saveError) setError(saveError)
+    if (frequency !== 'none' && until < start.slice(0, 10)) { setError('Choose a repeat end date on or after the meeting date.'); return }
+    savingLock.current = true
+    setSaving(true)
+    try {
+      const saveError = await onSave({ ...(event === 'new' ? {} : { id: event.id }), title, startAt, endAt, allDay, ...(frequency === 'none' ? {} : { recurrence: { frequency, until } }) })
+      if (saveError) setError(saveError)
+    } catch { setError('The meeting could not be saved. Try again.') }
+    finally { savingLock.current = false; setSaving(false) }
   }
 
   return <div className="modal-backdrop"><form ref={dialogRef} className="dialog-card event-dialog" role="dialog" aria-modal="true" aria-labelledby="event-dialog-title" onSubmit={(formEvent) => void submit(formEvent)} onKeyDown={containFocus}>
     <div className="event-dialog-kicker"><Clock3 size={15} /> SCHEDULED MEETING</div>
     <h2 id="event-dialog-title">{event === 'new' ? 'Add a meeting' : 'Edit meeting'}</h2>
-    <label>Title<input ref={titleRef} className="text-field" maxLength={120} value={title} onChange={(change) => setTitle(change.target.value)} required aria-describedby={error ? 'event-error' : undefined} /></label>
-    {!allDay && <div className="event-form-times"><label>Starts<input className="text-field" type="datetime-local" value={start} onChange={(change) => setStart(change.target.value)} required aria-invalid={Boolean(error)} aria-describedby={error ? 'event-error' : undefined} /></label><label>Ends<input className="text-field" type="datetime-local" value={end} onChange={(change) => setEnd(change.target.value)} required aria-invalid={Boolean(error)} aria-describedby={error ? 'event-error' : undefined} /></label></div>}
-    {allDay && <label>Date<input className="text-field" type="date" value={start.slice(0, 10)} onChange={(change) => setStart(`${change.target.value}T00:00`)} required aria-invalid={Boolean(error)} aria-describedby={error ? 'event-error' : undefined} /></label>}
-    <label className="all-day-choice"><input type="checkbox" checked={allDay} onChange={(change) => setAllDay(change.target.checked)} /> All day</label>
-    <p>Meeting rows stay compact, regardless of their duration. Tasks can be ordered around them.</p>
+    <label>Title<input ref={titleRef} disabled={saving} className="text-field" maxLength={120} value={title} onChange={(change) => setTitle(change.target.value)} required aria-describedby={error ? 'event-error' : undefined} /></label>
+    {!allDay && <div className="event-form-times"><label>Starts<input disabled={saving} className="text-field" type="datetime-local" value={start} onChange={(change) => setStart(change.target.value)} required aria-invalid={Boolean(error)} aria-describedby={error ? 'event-error' : undefined} /></label><label>Ends<input disabled={saving} className="text-field" type="datetime-local" value={end} onChange={(change) => setEnd(change.target.value)} required aria-invalid={Boolean(error)} aria-describedby={error ? 'event-error' : undefined} /></label></div>}
+    {allDay && <label>Date<input disabled={saving} className="text-field" type="date" value={start.slice(0, 10)} onChange={(change) => setStart(`${change.target.value}T00:00`)} required aria-invalid={Boolean(error)} aria-describedby={error ? 'event-error' : undefined} /></label>}
+    <label className="all-day-choice"><input type="checkbox" disabled={saving} checked={allDay} onChange={(change) => setAllDay(change.target.checked)} /> All day</label>
+    <div className="event-form-times"><label>Repeat<select className="text-field" value={frequency} disabled={saving} onChange={(change) => setFrequency(change.target.value as typeof frequency)}><option value="none">Does not repeat</option><option value="daily">Every day</option><option value="weekly">Every week</option><option value="monthly">Every month</option></select></label>{frequency !== 'none' && <label>Until<input disabled={saving} className="text-field" type="date" value={until} min={start.slice(0, 10)} onChange={(change) => setUntil(change.target.value)} required /></label>}</div>
+    {frequency !== 'none' && <p>Each occurrence can be edited or removed individually.{frequency === 'monthly' && ' Months without this day of the month are skipped.'}</p>}
     {error && <div id="event-error" className="inline-error" role="alert">{error}</div>}
-    <div className="dialog-actions"><button type="button" className="button secondary" onClick={onClose}>Cancel</button><button className="button primary"><Check size={14} /> Save meeting</button></div>
+    <div className="dialog-actions"><button type="button" disabled={saving} className="button secondary" onClick={onClose}>Cancel</button><button disabled={saving} className="button primary"><Check size={14} /> Save meeting</button></div>
   </form></div>
 }

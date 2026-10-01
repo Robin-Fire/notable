@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CompositionEvent, type KeyboardEvent } from 'react'
-import { AlertCircle, ArrowUpRight, Copy, CornerDownLeft, RotateCcw, X } from 'lucide-react'
-import type { CaptureState } from '../../shared/contracts'
+import { AlertCircle, ArrowUpRight, Copy, CornerDownLeft, Folder, RotateCcw, X } from 'lucide-react'
+import type { CaptureState, Category } from '../../shared/contracts'
 
 export function Capture() {
-  const [state, setState] = useState<CaptureState>({ body: '', images: [], generation: 0, revision: 0, shortcut: 'Control+N', theme: 'system', available: false })
+  const [state, setState] = useState<CaptureState>({ body: '', images: [], generation: 0, revision: 0, shortcut: 'Control+N', theme: 'system', available: false, categoryId: null })
+  const [categories, setCategories] = useState<Category[]>([])
   const [body, setBody] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -16,6 +17,7 @@ export function Capture() {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const revision = useRef(0)
   const generation = useRef(0)
+  const categoryId = useRef<string | null>(null)
   const draftTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const bodyRef = useRef('')
   const requestedHeight = useRef<number | null>(null)
@@ -28,12 +30,20 @@ export function Capture() {
   }, [])
 
   useEffect(() => {
+    const refreshCategories = async () => {
+      try {
+        const result = await window.notable.capture.categories()
+        if (result.ok) setCategories(result.value)
+      } catch { /* Keep capture usable if taxonomy is temporarily unavailable. */ }
+    }
     const apply = (next: Partial<CaptureState>) => {
       setState((current) => ({ ...current, ...next }))
       if (typeof next.body === 'string') setBody(next.body)
       if (typeof next.generation === 'number') generation.current = next.generation
       if (typeof next.revision === 'number') revision.current = next.revision
+      if (next.categoryId !== undefined) categoryId.current = next.categoryId
       if (next.theme) document.documentElement.dataset.theme = next.theme
+      if (next.available !== undefined) void refreshCategories()
     }
     void window.notable.capture.getState().then((result) => { if (result.ok) apply(result.value) })
     const unsubscribe = window.notable.capture.onState(apply)
@@ -49,13 +59,13 @@ export function Capture() {
     input.style.height = 'auto'
     const contentHeight = Math.min(input.scrollHeight, 132)
     input.style.height = `${contentHeight}px`
-    resizeCapture(Math.min(220, Math.max(88, contentHeight + 62 + (state.images.length ? 67 : 0) + (error || tooLong || !state.available ? 28 : 0))))
-  }, [body, error, tooLong, state.available, state.images.length, resizeCapture])
+    resizeCapture(Math.min(220, Math.max(88, contentHeight + (categories.length ? 89 : 62) + (state.images.length ? 67 : 0) + (error || tooLong || !state.available ? 28 : 0))))
+  }, [body, categories.length, error, tooLong, state.available, state.images.length, resizeCapture])
 
-  const persistDraft = useCallback(async (draft: string) => {
+  const persistDraft = useCallback(async (draft: string, selectedCategory = categoryId.current) => {
     if (!state.available || saving) return
     revision.current += 1
-    const result = await window.notable.capture.updateDraft({ body: draft, generation: generation.current, revision: revision.current })
+    const result = await window.notable.capture.updateDraft({ body: draft, generation: generation.current, revision: revision.current, categoryId: selectedCategory })
     if (result.ok) revision.current = Math.max(revision.current, result.value.revision)
   }, [saving, state.available])
 
@@ -78,7 +88,7 @@ export function Capture() {
     const unsubscribe = window.notable.capture.onQuitRequest(() => {
       clearTimeout(draftTimer.current)
       const draft = bodyRef.current
-      void window.notable.capture.flushBeforeQuit({ body: draft, generation: generation.current, revision: revision.current + 1 }).then((result) => {
+      void window.notable.capture.flushBeforeQuit({ body: draft, generation: generation.current, revision: revision.current + 1, categoryId: categoryId.current }).then((result) => {
         if (result.ok) { revision.current = Math.max(revision.current, result.value.revision); window.notable.capture.respondToQuit(true, draft) }
         else window.notable.capture.respondToQuit(false, draft)
       }).catch(() => window.notable.capture.respondToQuit(false, draft))
@@ -107,7 +117,7 @@ export function Capture() {
     const id = requestIdRef.current ?? crypto.randomUUID()
     requestIdRef.current = id
     try {
-      const result = await window.notable.capture.submit({ requestId: id, generation: generation.current, body })
+      const result = await window.notable.capture.submit({ requestId: id, generation: generation.current, body, categoryId: categoryId.current })
       if (!result.ok) { setError(result.message); return }
       setBody('')
       setState((current) => ({ ...current, images: [] }))
@@ -115,8 +125,10 @@ export function Capture() {
       requestIdRef.current = null
       revision.current = 0
       generation.current += 1
+      categoryId.current = null
+      setState((current) => ({ ...current, categoryId: null }))
       try { await window.notable.capture.dismiss('saved') } catch { /* The capture is already saved. */ }
-      resizeCapture(88)
+      resizeCapture(categories.length ? 115 : 88)
     } catch { setError('The capture could not be saved. Your text and images are still here. Try again.') }
     finally { savingLock.current = false; setSaving(false) }
   }
@@ -197,6 +209,12 @@ export function Capture() {
           if (!(next instanceof Node && event.currentTarget.closest('.capture-card')?.contains(next))) void window.notable.capture.dismiss('blur')
         }}
       />
+      {categories.length > 0 && <label className="capture-category-control"><Folder size={13} /><span>Category</span><select aria-label="Capture category" disabled={saving} value={state.categoryId ?? ''} onChange={(event) => {
+        const selected = event.target.value || null
+        categoryId.current = selected
+        setState((current) => ({ ...current, categoryId: selected }))
+        void persistDraft(bodyRef.current, selected)
+      }}><option value="">Unassigned</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>}
       {state.images.length > 0 && <div className="capture-images" aria-label="Pasted images">{state.images.map((image, index) => <div className="capture-image" key={image.id}><img src={image.dataUrl} alt={`Pasted image ${index + 1}`} /><button type="button" aria-label={`Remove pasted image ${index + 1}`} onClick={() => void removeImage(image.id)} disabled={saving || imagePending}><X size={12} /></button></div>)}</div>}
       {(error || tooLong || !state.available) && <div className={`capture-alert ${!state.available || error ? 'is-error' : ''}`} id="capture-status" role="status">
         <AlertCircle size={14} /> <span>{!state.available ? 'Couldn’t reach local storage. This draft may not be persisted.' : tooLong ? 'A note can contain up to 50,000 characters. Existing text was kept.' : error}</span>
