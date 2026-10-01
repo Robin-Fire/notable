@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { NotableApi } from '../shared/contracts'
+import type { NotiertApi } from '../shared/contracts'
 
-const capture: Pick<NotableApi, 'capture'> & { windows: Omit<NotableApi['windows'], 'onView' | 'ready'> } = {
+const capture: Pick<NotiertApi, 'capture'> & { windows: Omit<NotiertApi['windows'], 'onView' | 'ready'> } = {
   capture: {
     getState: () => ipcRenderer.invoke('capture:get-state'),
     categories: () => ipcRenderer.invoke('capture:categories'),
@@ -23,4 +23,4 @@ const capture: Pick<NotableApi, 'capture'> & { windows: Omit<NotableApi['windows
   },
   windows: { openCapture: () => ipcRenderer.send('windows:open-capture'), openNotes: () => ipcRenderer.send('windows:open-notes'), openSettings: () => ipcRenderer.send('windows:open-settings'), quit: () => ipcRenderer.send('app:quit') },
 }
-contextBridge.exposeInMainWorld('notable', capture)
+contextBridge.exposeInMainWorld('notiert', capture)

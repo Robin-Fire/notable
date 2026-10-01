@@ -4,7 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 
 const tempRoot = path.resolve(os.tmpdir())
-const profile = fs.mkdtempSync(path.join(tempRoot, 'notable-capture-smoke-'))
+const profile = fs.mkdtempSync(path.join(tempRoot, 'notiert-capture-smoke-'))
 app.setPath('userData', profile)
 app.commandLine.appendSwitch('disable-gpu')
 require('../out/main/index.js')
@@ -22,7 +22,7 @@ app.whenReady().then(async () => {
   }
   await notes.webContents.executeJavaScript("[...document.querySelectorAll('.side-nav button')].find((button) => button.textContent.includes('All items')).click()")
   await wait(300)
-  const createdCategory = await notes.webContents.executeJavaScript("window.notable.notes.createCategory('Capture smoke')")
+  const createdCategory = await notes.webContents.executeJavaScript("window.notiert.notes.createCategory('Capture smoke')")
   if (!createdCategory.ok) throw new Error(`Category creation failed: ${createdCategory.message}`)
   const categoryId = createdCategory.value.id
   await notes.webContents.executeJavaScript("document.querySelector('.capture-button').click()")
@@ -39,7 +39,7 @@ app.whenReady().then(async () => {
     if (!categoryAvailable) await wait(100)
   }
   if (!categoryAvailable) {
-    const categoryState = await capture.webContents.executeJavaScript("Promise.all([window.notable.capture.getState(), window.notable.capture.categories()])")
+    const categoryState = await capture.webContents.executeJavaScript("Promise.all([window.notiert.capture.getState(), window.notiert.capture.categories()])")
     throw new Error(`Capture category selector did not load the new category: ${JSON.stringify({ categoryId, categoryState })}`)
   }
   await capture.webContents.executeJavaScript(`(() => { const select = document.querySelector('[aria-label="Capture category"]'); select.value = ${JSON.stringify(categoryId)}; select.dispatchEvent(new Event('change', { bubbles: true })); })()`)
@@ -52,7 +52,7 @@ app.whenReady().then(async () => {
   await wait(500)
   const after = await capture.webContents.executeJavaScript("({ text: document.querySelector('.capture-input').value, error: document.querySelector('.capture-alert')?.innerText })")
   const Database = require('better-sqlite3')
-  const db = new Database(path.join(profile, 'notable.sqlite'), { readonly: true })
+  const db = new Database(path.join(profile, 'notiert.sqlite'), { readonly: true })
   const count = db.prepare("SELECT count(*) AS count FROM notes WHERE kind='inbox' AND body='Capture smoke test'").get().count
   const categorizedCount = db.prepare("SELECT count(*) AS count FROM notes WHERE kind='inbox' AND body='Capture smoke test' AND project_id=?").get(categoryId).count
   db.close()
@@ -104,13 +104,13 @@ app.whenReady().then(async () => {
 
 function dbImageCount(profilePath) {
   const Database = require('better-sqlite3')
-  const db = new Database(path.join(profilePath, 'notable.sqlite'), { readonly: true })
+  const db = new Database(path.join(profilePath, 'notiert.sqlite'), { readonly: true })
   try { return db.prepare("SELECT count(*) AS count FROM notes n JOIN item_images i ON i.note_id=n.id WHERE n.kind='inbox' AND n.body=''").get().count }
   finally { db.close() }
 }
 
 app.on('quit', () => {
   const target = path.resolve(profile)
-  if (path.dirname(target) !== tempRoot || !path.basename(target).startsWith('notable-capture-smoke-')) return
+  if (path.dirname(target) !== tempRoot || !path.basename(target).startsWith('notiert-capture-smoke-')) return
   try { fs.rmSync(target, { recursive: true, force: true }) } catch {}
 })

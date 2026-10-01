@@ -58,7 +58,7 @@ function setup({ taxonomy } = {}) {
     data: { export: async () => ({ ok: true, value: undefined }), backup: async () => ({ ok: true, value: undefined }), restore: async () => ({ ok: true, value: undefined }), diagnostics: async () => ({ ok: true, value: undefined }) },
     windows: { openCapture() {}, openNotes() {}, openSettings() {}, quit() {}, ready() {}, onView(callback) { viewListener = callback; return () => {} } },
   }
-  window.notable = api
+  window.notiert = api
   const view = render(React.createElement(NotesApp))
   return { ...view, api, changeView: (next) => act(() => viewListener(next)) }
 }
@@ -73,28 +73,28 @@ test('browser preview capture enters Inbox and a filed task moves through Backlo
   require(path.join(generated, 'browserPreview.cjs'))
   let opened = false
   const onOpen = () => { opened = true }
-  window.addEventListener('notable:browser-capture', onOpen)
-  window.notable.windows.openCapture()
+  window.addEventListener('notiert:browser-capture', onOpen)
+  window.notiert.windows.openCapture()
   assert.equal(opened, true)
-  window.removeEventListener('notable:browser-capture', onOpen)
+  window.removeEventListener('notiert:browser-capture', onOpen)
   const id = '66666666-6666-4666-8666-666666666666'
-  await window.notable.capture.submit({ requestId: id, generation: 0, body: 'New browser task' })
-  const inbox = await window.notable.planner.inbox()
+  await window.notiert.capture.submit({ requestId: id, generation: 0, body: 'New browser task' })
+  const inbox = await window.notiert.planner.inbox()
   const created = inbox.value.items.find((item) => item.body === 'New browser task')
   assert.ok(created)
-  await window.notable.planner.classify({ id: created.id, kind: 'task', tags: ['Planning'] })
-  const backlog = await window.notable.planner.backlog({})
+  await window.notiert.planner.classify({ id: created.id, kind: 'task', tags: ['Planning'] })
+  const backlog = await window.notiert.planner.backlog({})
   assert.ok(backlog.value.items.some((task) => task.id === created.id))
-  const tasks = await window.notable.planner.tasks('2026-09-26', '2026-09-28')
+  const tasks = await window.notiert.planner.tasks('2026-09-26', '2026-09-28')
   assert.ok(!tasks.value.tasks.some((task) => task.id === created.id))
-  await window.notable.planner.setReady({ id: created.id })
-  const ready = await window.notable.planner.tasks('2026-09-26', '2026-09-28')
+  await window.notiert.planner.setReady({ id: created.id })
+  const ready = await window.notiert.planner.tasks('2026-09-26', '2026-09-28')
   assert.ok(ready.value.tasks.some((task) => task.id === created.id && task.plannedDate === null))
   const app = render(React.createElement(NotesApp))
   try {
     fireEvent.click(await screen.findByRole('button', { name: 'Plan' }))
     await screen.findByRole('heading', { name: 'Plan' })
-    await act(async () => { await window.notable.planner.move({ id: created.id, plannedDate: '2026-09-27', beforeEventId: null, beforeId: null }) })
+    await act(async () => { await window.notiert.planner.move({ id: created.id, plannedDate: '2026-09-27', beforeEventId: null, beforeId: null }) })
     assert.ok(screen.getByRole('heading', { name: 'Plan' }))
   } finally { app.unmount() }
 })
@@ -103,7 +103,7 @@ test('sidebar Capture opens the browser preview editor and saves to Inbox', asyn
   const app = setup()
   let submitted
   app.api.capture = { submit: async (input) => { submitted = input; return { ok: true, value: { id: captureId } } } }
-  app.api.windows.openCapture = () => window.dispatchEvent(new window.Event('notable:browser-capture'))
+  app.api.windows.openCapture = () => window.dispatchEvent(new window.Event('notiert:browser-capture'))
   try {
     fireEvent.click(within(document.querySelector('.sidebar')).getByRole('button', { name: /Capture/ }))
     fireEvent.change(screen.getByRole('textbox', { name: 'Capture text' }), { target: { value: 'New thought' } })
@@ -142,13 +142,13 @@ test('browser capture saves the chosen category to Inbox', async () => {
   require(path.join(generated, 'browserPreview.cjs'))
   const app = render(React.createElement(NotesApp))
   try {
-    act(() => window.notable.windows.openCapture())
+    act(() => window.notiert.windows.openCapture())
     const category = await screen.findByRole('combobox', { name: 'Capture category' })
     fireEvent.change(category, { target: { value: '11111111-1111-4111-8111-111111111111' } })
     fireEvent.change(screen.getByRole('textbox', { name: 'Capture text' }), { target: { value: 'Categorized browser capture' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save to Inbox' }))
     await screen.findByRole('heading', { name: /Inbox/ })
-    const inbox = await window.notable.planner.inbox()
+    const inbox = await window.notiert.planner.inbox()
     assert.equal(inbox.value.items.find((item) => item.body === 'Categorized browser capture').categoryId, '11111111-1111-4111-8111-111111111111')
   } finally { app.unmount() }
 })

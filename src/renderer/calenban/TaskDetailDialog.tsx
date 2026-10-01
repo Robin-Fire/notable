@@ -45,21 +45,21 @@ export function TaskDetailDialog({ task, suggestions, onClose, onChanged }: { ta
   async function save() {
     setBusy(true); setError('')
     try {
-      const result = resultValue(await window.notable.notes.updateItem({ id: task.id, expectedRevision: revision, body, tags: collectTags(tags, tagDraft) }))
+      const result = resultValue(await window.notiert.notes.updateItem({ id: task.id, expectedRevision: revision, body, tags: collectTags(tags, tagDraft) }))
       setRevision(result.revision); setSavedBody(result.body); setSavedTags(result.tags); setTags(result.tags); setTagDraft(''); onChanged()
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'The task could not be saved.') }
     finally { setBusy(false) }
   }
 
   async function copy() {
-    try { const text = resultValue(await window.notable.notes.copy([task.id])); setNotice(text ? 'Copied to clipboard.' : 'Nothing to copy.') }
+    try { const text = resultValue(await window.notiert.notes.copy([task.id])); setNotice(text ? 'Copied to clipboard.' : 'Nothing to copy.') }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'The task could not be copied.') }
   }
 
   async function trash() {
     if (changed && !window.confirm('Discard unsaved changes and move this task to Trash?')) return
     setBusy(true)
-    try { resultValue(await window.notable.notes.trash([task.id])); onChanged(); onClose() }
+    try { resultValue(await window.notiert.notes.trash([task.id])); onChanged(); onClose() }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'The task could not be moved to Trash.') }
     finally { setBusy(false) }
   }
@@ -67,7 +67,7 @@ export function TaskDetailDialog({ task, suggestions, onClose, onChanged }: { ta
   async function returnToInbox() {
     if (changed && !window.confirm('Discard unsaved changes and return this task to Inbox?')) return
     setBusy(true)
-    try { resultValue(await window.notable.planner.unfile(task.id)); onChanged(); onClose() }
+    try { resultValue(await window.notiert.planner.unfile(task.id)); onChanged(); onClose() }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'The task could not be returned to Inbox.') }
     finally { setBusy(false) }
   }

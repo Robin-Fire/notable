@@ -1,4 +1,4 @@
-# Notable / Calenban review — 26 September 2026
+# Notiert / Calenban review — 26 September 2026
 
 ## Outcome and scope
 

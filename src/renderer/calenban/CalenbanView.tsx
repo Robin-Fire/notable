@@ -65,7 +65,7 @@ export function CalenbanView() {
     return byDay
   }, [days, events])
   const moveTask = useCallback(async (id: string, plannedDate: string | null, beforeEventId: string | null, beforeId: string | null) => {
-    try { getValue(await window.notable.planner.move({ id, plannedDate, beforeEventId, beforeId })); setMutationError('') }
+    try { getValue(await window.notiert.planner.move({ id, plannedDate, beforeEventId, beforeId })); setMutationError('') }
     catch (reason) { setMutationError(reason instanceof Error ? reason.message : 'The task could not be moved.') }
   }, [])
 
@@ -93,8 +93,8 @@ export function CalenbanView() {
 
   async function saveEvent(input: PlannerEventInput): Promise<string | null> {
     try {
-      if (input.id) getValue(await window.notable.planner.updateEvent({ ...input, id: input.id }))
-      else getValue(await window.notable.planner.createEvent(input))
+      if (input.id) getValue(await window.notiert.planner.updateEvent({ ...input, id: input.id }))
+      else getValue(await window.notiert.planner.createEvent(input))
       setMutationError('')
       setEventDialog(null)
       return null
@@ -102,18 +102,18 @@ export function CalenbanView() {
   }
 
   async function removeEvent(id: string) {
-    try { setDeletedEvent(getValue(await window.notable.planner.deleteEvent(id))); setMutationError('') }
+    try { setDeletedEvent(getValue(await window.notiert.planner.deleteEvent(id))); setMutationError('') }
     catch (reason) { setMutationError(reason instanceof Error ? reason.message : 'The meeting could not be removed.') }
   }
 
   async function undoDeleteEvent() {
     if (!deletedEvent) return
-    try { getValue(await window.notable.planner.undoDeleteEvent(deletedEvent)); setDeletedEvent(null); setMutationError('') }
+    try { getValue(await window.notiert.planner.undoDeleteEvent(deletedEvent)); setDeletedEvent(null); setMutationError('') }
     catch (reason) { setMutationError(reason instanceof Error ? reason.message : 'The meeting could not be restored.') }
   }
 
   async function deleteTask(id: string) {
-    try { getValue(await window.notable.notes.trash([id])); setMutationError(''); setDetailTask((task) => task?.id === id ? null : task) }
+    try { getValue(await window.notiert.notes.trash([id])); setMutationError(''); setDetailTask((task) => task?.id === id ? null : task) }
     catch (reason) { setMutationError(reason instanceof Error ? reason.message : 'The task could not be deleted.') }
   }
   const laneTasks = (day: string, eventId: string | null) => tasksBySlot.get(`${day}\u0000${eventId ?? ''}`) ?? []

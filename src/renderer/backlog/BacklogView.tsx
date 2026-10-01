@@ -30,14 +30,14 @@ export function BacklogView() {
 
   const refreshTaxonomy = useCallback(async () => {
     try {
-      const data = valueOf(await window.notable.notes.taxonomy())
+      const data = valueOf(await window.notiert.notes.taxonomy())
       setCategories((current) => JSON.stringify(current) === JSON.stringify(data.categories) ? current : data.categories)
       setTags((current) => JSON.stringify(current) === JSON.stringify(data.tags) ? current : data.tags)
       setTaxonomyReady(true)
       setError('')
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Categories and tags could not be loaded.') }
   }, [])
-  useEffect(() => { void refreshTaxonomy(); return window.notable.notes.onChanged(() => { void refreshTaxonomy() }) }, [refreshTaxonomy])
+  useEffect(() => { void refreshTaxonomy(); return window.notiert.notes.onChanged(() => { void refreshTaxonomy() }) }, [refreshTaxonomy])
 
   const groups = useMemo<Group[]>(() => [
     ...categories.map((category) => ({ id: category.id, name: category.name, categoryId: category.id, tags: tags.filter((tag) => tag.categoryId === category.id), allTags: tags })),
@@ -83,7 +83,7 @@ function BacklogCategoryGroup({ group, categories, query, onCount, onOpenTask, o
     setLoading(true)
     setLoadingMore(false)
     try {
-      const page = valueOf(await window.notable.planner.backlog({ categoryId: group.categoryId, query, ...selectionFilter, limit: pageSize }))
+      const page = valueOf(await window.notiert.planner.backlog({ categoryId: group.categoryId, query, ...selectionFilter, limit: pageSize }))
       if (request !== requestId.current) return
       const extraTags = (page.tagNames ?? []).filter((name) => !group.tags.some((tag) => tag.name.toLocaleLowerCase() === name.toLocaleLowerCase()))
       setAdditionalTagNames((current) => current.length === extraTags.length && current.every((name, index) => name === extraTags[index]) ? current : extraTags)
@@ -95,7 +95,7 @@ function BacklogCategoryGroup({ group, categories, query, onCount, onOpenTask, o
 
   useEffect(() => {
     void refresh()
-    const unsubscribe = window.notable.planner.onChanged(() => { void refresh() })
+    const unsubscribe = window.notiert.planner.onChanged(() => { void refresh() })
     return () => { requestId.current += 1; unsubscribe() }
   }, [refresh])
 
@@ -104,7 +104,7 @@ function BacklogCategoryGroup({ group, categories, query, onCount, onOpenTask, o
     const request = requestId.current
     setLoadingMore(true)
     try {
-      const page = valueOf(await window.notable.planner.backlog({ categoryId: group.categoryId, query, ...selectionFilter, cursor, limit: pageSize }))
+      const page = valueOf(await window.notiert.planner.backlog({ categoryId: group.categoryId, query, ...selectionFilter, cursor, limit: pageSize }))
       if (request !== requestId.current) return
       setTasks((current) => [...current, ...page.items]); setCursor(page.nextCursor); setTotal(page.total); onCount(group.id, page.total); setError('')
     } catch (reason) { if (request === requestId.current) setError(reason instanceof Error ? reason.message : 'Older to-dos could not be loaded.') }
@@ -114,7 +114,7 @@ function BacklogCategoryGroup({ group, categories, query, onCount, onOpenTask, o
   function toggleTag(name: string) { setSelected((current) => ({ ...current, [name]: !(current[name] ?? true) })) }
   function selectAll() { setSelected({}); setIncludeUntagged(true) }
   async function setCategory(id: string, categoryId: string | null) {
-    try { valueOf(await window.notable.notes.setCategory({ id, categoryId })) }
+    try { valueOf(await window.notiert.notes.setCategory({ id, categoryId })) }
     catch (reason) { onError(reason instanceof Error ? reason.message : 'Category could not be changed.') }
   }
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }))
@@ -127,11 +127,11 @@ function BacklogCategoryGroup({ group, categories, query, onCount, onOpenTask, o
     let beforeId = reordered[newIndex + 1]?.id ?? null
     try {
       if (beforeId === null && cursor) {
-        const nextPage = valueOf(await window.notable.planner.backlog({ categoryId: group.categoryId, query, ...selectionFilter, cursor, limit: pageSize }))
+        const nextPage = valueOf(await window.notiert.planner.backlog({ categoryId: group.categoryId, query, ...selectionFilter, cursor, limit: pageSize }))
         beforeId = nextPage.items[0]?.id ?? null
       }
       setTasks(reordered)
-      valueOf(await window.notable.planner.reorderBacklog({ id: String(event.active.id), categoryId: group.categoryId, beforeId })); void refresh()
+      valueOf(await window.notiert.planner.reorderBacklog({ id: String(event.active.id), categoryId: group.categoryId, beforeId })); void refresh()
     }
     catch (reason) { void refresh(); onError(reason instanceof Error ? reason.message : 'Priority could not be saved.') }
   }
@@ -149,7 +149,7 @@ function BacklogCategoryGroup({ group, categories, query, onCount, onOpenTask, o
       {loading && !loaded ? <div className="loading-state"><span className="spinner" /> Loading to-dos…</div> : !tasks.length ? <div className="backlog-empty">{canShowTasks ? (query ? 'No to-dos match this search.' : 'No to-dos in this category.') : 'Select a tag to show matching to-dos.'}</div> : <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void onDragEnd(event)}>
         <SortableContext items={tasks.map((task) => task.id)} strategy={verticalListSortingStrategy}>
           <div className="backlog-task-list">{tasks.map((task) => <SortableBacklogTask key={task.id} task={task} categories={categories} onOpen={() => onOpenTask(task)} onReady={async () => {
-            try { valueOf(await window.notable.planner.setReady({ id: task.id })) }
+            try { valueOf(await window.notiert.planner.setReady({ id: task.id })) }
             catch (reason) { onError(reason instanceof Error ? reason.message : 'To-do could not be added to Ready.') }
           }} onCategoryChange={(categoryId) => void setCategory(task.id, categoryId)} draggingDisabled={Boolean(query)} />)}</div>
         </SortableContext>

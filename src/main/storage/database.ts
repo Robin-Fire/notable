@@ -175,7 +175,7 @@ export class Store {
       })()
     }
     const version = this.db.prepare('SELECT max(version) AS version FROM schema_migrations').get() as { version: number | null }
-    if (version.version !== 8) throw new AppError(version.version && version.version > 8 ? 'DB_NEWER_VERSION' : 'DB_INVALID_SCHEMA', 'This database has an unsupported notable schema.')
+    if (version.version !== 8) throw new AppError(version.version && version.version > 8 ? 'DB_NEWER_VERSION' : 'DB_INVALID_SCHEMA', 'This database has an unsupported notiert schema.')
   }
 
   getCaptureDraft() {
@@ -720,8 +720,8 @@ export class Store {
       const version = database.prepare('SELECT max(version) AS version FROM schema_migrations').get() as { version: number | null }
       const required = ['notes', 'drafts', 'app_state', 'schema_migrations', 'note_search', ...(version.version && version.version >= 3 ? ['legacy_meeting_sessions', 'planner_events', 'item_tags', 'note_tags'] : ['meetings']), ...(version.version && version.version >= 4 ? ['item_images', 'capture_draft_images'] : []), ...(version.version && version.version >= 5 ? ['categories'] : [])]
       const tables = new Set((database.prepare("SELECT name FROM sqlite_master WHERE type IN ('table','view')").all() as { name: string }[]).map((row) => row.name))
-      if (required.some((name) => !tables.has(name))) throw new AppError('DB_INVALID_SCHEMA', 'The selected file is not a complete notable backup.')
-      if (![2, 3, 4, 5, 6, 7, 8].includes(version.version ?? 0)) throw new AppError(version.version && version.version > 8 ? 'DB_NEWER_VERSION' : 'DB_INVALID_SCHEMA', 'This backup has an unsupported notable schema.')
+      if (required.some((name) => !tables.has(name))) throw new AppError('DB_INVALID_SCHEMA', 'The selected file is not a complete notiert backup.')
+      if (![2, 3, 4, 5, 6, 7, 8].includes(version.version ?? 0)) throw new AppError(version.version && version.version > 8 ? 'DB_NEWER_VERSION' : 'DB_INVALID_SCHEMA', 'This backup has an unsupported notiert schema.')
       if ((database.pragma('foreign_key_check') as unknown[]).length) throw new AppError('DB_CORRUPT', 'The selected backup contains invalid note links.')
     } finally { if (path) database.close() }
   }

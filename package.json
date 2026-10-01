@@ -1,9 +1,9 @@
 {
-  "name": "notable",
+  "name": "notiert",
   "version": "0.1.5",
   "description": "A quiet, local desktop utility for capturing thoughts.",
   "main": "out/main/index.js",
-  "author": "notable",
+  "author": "notiert",
   "license": "UNLICENSED",
   "private": true,
   "scripts": {

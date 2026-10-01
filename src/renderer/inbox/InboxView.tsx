@@ -30,7 +30,7 @@ export function InboxView({ onOpen }: { onOpen: (id: string) => void }) {
   const load = useCallback(async (cursor?: InboxPage['nextCursor'], append = false) => {
     setLoading(true)
     try {
-      const page = valueOf(await window.notable.planner.inbox({ cursor: cursor ?? undefined, limit: 50 }))
+      const page = valueOf(await window.notiert.planner.inbox({ cursor: cursor ?? undefined, limit: 50 }))
       setItems((current) => append ? [...current, ...page.items] : page.items)
       setNextCursor(page.nextCursor); setTotal(page.total); setError('')
     }
@@ -38,12 +38,12 @@ export function InboxView({ onOpen }: { onOpen: (id: string) => void }) {
     finally { setLoading(false) }
   }, [])
 
-  useEffect(() => { void load(); return window.notable.planner.onChanged(() => {
+  useEffect(() => { void load(); return window.notiert.planner.onChanged(() => {
     if (filingRef.current) { filingBroadcastSeen.current = true; return }
     if (skipNextBroadcast.current) { skipNextBroadcast.current = false; return }
     void load()
   }) }, [load])
-  useEffect(() => { void window.notable.notes.taxonomy().then((result) => { if (result.ok) { setCategories(result.value.categories); setTagRecords(result.value.tags); setSuggestions(result.value.tags.map((tag) => tag.name)) } }) }, [])
+  useEffect(() => { void window.notiert.notes.taxonomy().then((result) => { if (result.ok) { setCategories(result.value.categories); setTagRecords(result.value.tags); setSuggestions(result.value.tags.map((tag) => tag.name)) } }) }, [])
 
   async function file(item: Note, kind: 'note' | 'task', tags: string[], categoryId: string | null) {
     if (pendingId) return
@@ -51,7 +51,7 @@ export function InboxView({ onOpen }: { onOpen: (id: string) => void }) {
     filingBroadcastSeen.current = false
     setPendingId(item.id)
     try {
-      valueOf(await window.notable.planner.classify({ id: item.id, kind, tags, categoryId }))
+      valueOf(await window.notiert.planner.classify({ id: item.id, kind, tags, categoryId }))
       try { localStorage.removeItem(`inbox-tags:${item.id}`) } catch { /* Filing still succeeded. */ }
       setItems((current) => current.filter((candidate) => candidate.id !== item.id))
       setTotal((count) => Math.max(0, count - 1))
@@ -61,7 +61,7 @@ export function InboxView({ onOpen }: { onOpen: (id: string) => void }) {
   }
 
   async function setCategory(id: string, categoryId: string | null) {
-    try { valueOf(await window.notable.notes.setCategory({ id, categoryId })); return true }
+    try { valueOf(await window.notiert.notes.setCategory({ id, categoryId })); return true }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Category could not be changed.'); return false }
   }
 

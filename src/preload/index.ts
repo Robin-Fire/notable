@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { NotableApi } from '../shared/contracts'
+import type { NotiertApi } from '../shared/contracts'
 
-const api: Omit<NotableApi, 'capture'> = {
+const api: Omit<NotiertApi, 'capture'> = {
   updates: {
     getStatus: () => ipcRenderer.invoke('updates:status'),
     check: () => ipcRenderer.invoke('updates:check'),
@@ -42,4 +42,4 @@ const api: Omit<NotableApi, 'capture'> = {
   },
 }
 
-contextBridge.exposeInMainWorld('notable', api)
+contextBridge.exposeInMainWorld('notiert', api)

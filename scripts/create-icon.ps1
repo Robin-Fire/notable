@@ -26,5 +26,5 @@ $graphics.DrawString('n', $font, [System.Drawing.Brushes]::White, [System.Drawin
 
 $handle = $bitmap.GetHicon()
 $icon = [System.Drawing.Icon]::FromHandle($handle)
-$stream = [System.IO.File]::Open((Join-Path $PSScriptRoot '..\resources\notable.ico'), [System.IO.FileMode]::Create)
+$stream = [System.IO.File]::Open((Join-Path $PSScriptRoot '..\resources\notiert.ico'), [System.IO.FileMode]::Create)
 try { $icon.Save($stream) } finally { $stream.Dispose(); $icon.Dispose(); $bitmap.Dispose(); $graphics.Dispose(); $font.Dispose(); $format.Dispose(); $path.Dispose() }

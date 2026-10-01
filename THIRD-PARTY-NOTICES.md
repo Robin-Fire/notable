@@ -1,6 +1,6 @@
 # Third-party notices
 
-notable bundles software and typefaces under their respective licenses. Full installed dependency licenses are available in the npm package metadata and the corresponding upstream projects.
+notiert bundles software and typefaces under their respective licenses. Full installed dependency licenses are available in the npm package metadata and the corresponding upstream projects.
 
 - Geist Sans and Geist Mono: SIL Open Font License 1.1. Copies are included in `resources/licenses/`.
 - Electron: MIT License.

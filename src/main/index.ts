@@ -10,6 +10,13 @@ import { SettingsStore } from './settings'
 import { CaptureSubmitSchema, CategoryNameSchema, ClassifyItemSchema, DeletedPlannerEventSchema, IdsSchema, InboxPageSchema, ItemCategorySchema, NoteFilterSchema, NoteUpdateSchema, PlannerBacklogQuerySchema, PlannerBacklogReorderSchema, PlannerEventInputSchema, PlannerMoveSchema, PlannerQuerySchema, PlannerReadySchema, SettingsSchema, TagNameSchema, TagUpdateSchema } from '../shared/contracts'
 import { AppError, messageOf } from '../shared/errors'
 
+// Reuse the original profile on upgrades; custom test profiles stay isolated.
+const defaultProfile = path.join(app.getPath('appData'), 'notiert')
+const legacyProfile = path.join(app.getPath('appData'), 'notable')
+if (app.getPath('userData') === defaultProfile && !fs.existsSync(path.join(defaultProfile, 'notiert.sqlite')) && fs.existsSync(path.join(legacyProfile, 'notable.sqlite'))) {
+  app.setPath('userData', legacyProfile)
+}
+
 const hasSingleInstance = app.requestSingleInstanceLock()
 if (!hasSingleInstance) app.quit()
 
@@ -126,7 +133,7 @@ function createNotesWindow(view: 'all' | 'inbox' | 'calenban' | 'trash' | 'setti
   notesWindow = new BrowserWindow({
     width: 1040, height: 720, minWidth: 760, minHeight: 520, show: false,
     backgroundColor: settings.get().theme === 'dark' ? '#0A0A0A' : '#FAFAFA',
-    title: 'notable', autoHideMenuBar: true,
+    title: 'notiert', autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
   })
   protect(notesWindow)
@@ -175,7 +182,7 @@ async function handleQuitResponse(saved: boolean, body: string) {
   if (saved) { quitPromptActive = false; quitApproved = true; app.quit(); return }
   const options: Electron.MessageBoxOptions = {
     type: 'warning', buttons: ['Retry', 'Copy text', 'Quit without saving', 'Cancel'], defaultId: 3, cancelId: 3,
-    title: 'Draft could not be saved', message: 'notable could not save this draft.', detail: 'Copy the text before leaving, retry the save, or choose Quit without saving and lose this draft.',
+    title: 'Draft could not be saved', message: 'notiert could not save this draft.', detail: 'Copy the text before leaving, retry the save, or choose Quit without saving and lose this draft.',
   }
   const owner = captureWindow && !captureWindow.isDestroyed() && captureWindow.isVisible() ? captureWindow : notesWindow && !notesWindow.isDestroyed() && notesWindow.isVisible() ? notesWindow : null
   const response = owner ? await dialog.showMessageBox(owner, options) : await dialog.showMessageBox(options)
@@ -195,9 +202,9 @@ function syncTray() {
     { label: 'Open Plan', click: () => showNotes('calenban') },
     { label: 'Settings', click: () => showNotes('settings') },
     { type: 'separator' },
-    { label: 'Quit notable', click: requestQuit },
+    { label: 'Quit notiert', click: requestQuit },
   ]))
-  tray.setToolTip('notable')
+  tray.setToolTip('notiert')
 }
 
 function makeTray() {
@@ -381,10 +388,10 @@ function registerIpc() {
   roleHandler('data:backup', 'notes', async () => backupToUserPath())
   roleHandler('data:restore', 'notes', async () => restoreBackup())
   roleHandler('data:diagnostics', 'notes', async () => {
-    const result = await dialog.showSaveDialog(notesWindow!, { title: 'Export diagnostics', defaultPath: path.join(app.getPath('documents'), `notable-diagnostics-${new Date().toISOString().slice(0, 10)}.txt`), filters: [{ name: 'Text', extensions: ['txt'] }] })
+    const result = await dialog.showSaveDialog(notesWindow!, { title: 'Export diagnostics', defaultPath: path.join(app.getPath('documents'), `notiert-diagnostics-${new Date().toISOString().slice(0, 10)}.txt`), filters: [{ name: 'Text', extensions: ['txt'] }] })
     if (result.canceled || !result.filePath) return
     const integrity = store ? 'ok' : 'unavailable'
-    const contents = [`notable diagnostics`, `Date: ${new Date().toISOString()}`, `Version: ${app.getVersion()}`, `Electron: ${process.versions.electron}`, `Windows: ${os.release()}`, `Shortcut registered: ${globalShortcut.isRegistered(settings.get().shortcut)}`, `Database: ${integrity}`].join('\n')
+    const contents = [`notiert diagnostics`, `Date: ${new Date().toISOString()}`, `Version: ${app.getVersion()}`, `Electron: ${process.versions.electron}`, `Windows: ${os.release()}`, `Shortcut registered: ${globalShortcut.isRegistered(settings.get().shortcut)}`, `Database: ${integrity}`].join('\n')
     fs.writeFileSync(result.filePath, contents, 'utf8')
   })
   ipcMain.on('capture:resize', (event, rawHeight: unknown) => {
@@ -431,7 +438,7 @@ async function exportData(raw: unknown) {
   const taskMetadata = db.taskExportMetadata(rows.map((row) => row.id))
   const legacyMeetingLabels = new Map(db.legacyMeetingLabels().map((meeting) => [meeting.id, meeting.title]))
   const ext = input.format as 'txt' | 'md'
-  const filename = `notable-export-${new Date().toISOString().slice(0, 10)}.${ext}`
+  const filename = `notiert-export-${new Date().toISOString().slice(0, 10)}.${ext}`
   const choice = await dialog.showSaveDialog(notesWindow!, { title: 'Export notes', defaultPath: path.join(app.getPath('documents'), filename), filters: [{ name: ext === 'md' ? 'Markdown' : 'Text', extensions: [ext] }] })
   if (choice.canceled || !choice.filePath) return
   const list = rows.map((row) => {
@@ -458,7 +465,7 @@ async function exportData(raw: unknown) {
 }
 
 async function backupToUserPath() {
-  const result = await dialog.showSaveDialog(notesWindow!, { title: 'Create SQLite backup', defaultPath: path.join(app.getPath('documents'), `notable-backup-${new Date().toISOString().slice(0, 10)}.sqlite`), filters: [{ name: 'SQLite backup', extensions: ['sqlite', 'db'] }] })
+  const result = await dialog.showSaveDialog(notesWindow!, { title: 'Create SQLite backup', defaultPath: path.join(app.getPath('documents'), `notiert-backup-${new Date().toISOString().slice(0, 10)}.sqlite`), filters: [{ name: 'SQLite backup', extensions: ['sqlite', 'db'] }] })
   if (result.canceled || !result.filePath) return
   if (path.resolve(result.filePath) === path.resolve(requireStore().path)) throw new AppError('INVALID_BACKUP_PATH', 'Choose a separate file for the backup.')
   try {
@@ -532,7 +539,10 @@ if (hasSingleInstance) {
   app.whenReady().then(() => {
     fs.mkdirSync(app.getPath('userData'), { recursive: true })
     settings.load()
-    try { store = new Store(path.join(app.getPath('userData'), 'notable.sqlite')) }
+    try {
+      const legacyDatabase = path.join(app.getPath('userData'), 'notable.sqlite')
+      store = new Store(fs.existsSync(legacyDatabase) ? legacyDatabase : path.join(app.getPath('userData'), 'notiert.sqlite'))
+    }
     catch (error) { console.error('database-open-failed', messageOf(error)) }
     makeTray()
     registerIpc()
@@ -552,7 +562,7 @@ if (hasSingleInstance) {
     if (pendingCapture) { pendingCapture = false; showCapture() }
     syncTray()
   }).catch((error) => {
-    dialog.showErrorBox('notable could not start', 'The app could not initialize its local storage. Try restarting notable.')
+    dialog.showErrorBox('notiert could not start', 'The app could not initialize its local storage. Try restarting notiert.')
     console.error('startup-failed', messageOf(error))
   })
 

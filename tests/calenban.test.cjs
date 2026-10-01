@@ -20,7 +20,7 @@ const { localDateBounds, eventOverlapsLocalDay } = require(path.join(generated, 
 after(() => fs.rmSync(generated, { recursive: true, force: true }))
 
 function withStore(callback) {
-  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'notable-test-'))
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'notiert-test-'))
   const store = new Store(path.join(folder, 'notes.sqlite'))
   try { callback(store) }
   finally { store.close(); fs.rmSync(folder, { recursive: true, force: true }) }
@@ -33,7 +33,7 @@ function captureTask(store, body, tags = []) {
 }
 
 test('pasted image survives draft restart, image-only capture, filing, and backup', async () => {
-  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'notable-image-test-'))
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'notiert-image-test-'))
   const file = path.join(folder, 'notes.sqlite')
   const backup = path.join(folder, 'backup.sqlite')
   const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl8n+QAAAAASUVORK5CYII='
@@ -60,7 +60,7 @@ test('pasted image survives draft restart, image-only capture, filing, and backu
 })
 
 test('version 3 database migrates to image storage without losing notes', () => {
-  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'notable-v3-'))
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'notiert-v3-'))
   const file = path.join(folder, 'notes.sqlite')
   let store = new Store(file)
   try {
@@ -155,7 +155,7 @@ test('tasks move between category backlog, Ready, a day, and back to Ready', () 
 })
 
 test('v7 migration assigns direct categories only from unambiguous legacy tags and initializes priority', () => {
-  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'notable-v7-'))
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'notiert-v7-'))
   const file = path.join(folder, 'notes.sqlite')
   let store = new Store(file)
   try {
@@ -191,7 +191,7 @@ test('v7 migration assigns direct categories only from unambiguous legacy tags a
 })
 
 test('capture category persists in the draft and copies to the submitted Inbox item', () => {
-  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'notable-capture-category-'))
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'notiert-capture-category-'))
   const file = path.join(folder, 'notes.sqlite')
   let store = new Store(file)
   try {
@@ -390,7 +390,7 @@ test('date bounds follow local daylight-saving day lengths', () => {
 })
 
 test('version 2 database migrates with historical meeting labels intact', () => {
-  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'notable-v2-'))
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'notiert-v2-'))
   const file = path.join(folder, 'legacy.sqlite')
   const legacy = new Database(file)
   legacy.exec(`

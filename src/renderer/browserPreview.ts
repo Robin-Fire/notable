@@ -1,4 +1,4 @@
-import type { Category, Note, NotableApi, PlannerEvent, PlannerEventInput, DeletedPlannerEvent, PlannerTask, TagRecord } from '../shared/contracts'
+import type { Category, Note, NotiertApi, PlannerEvent, PlannerEventInput, DeletedPlannerEvent, PlannerTask, TagRecord } from '../shared/contracts'
 
 import { meetingOccurrences } from '../shared/meetingRecurrence'
 import { eventOverlapsLocalDay, localDateBounds } from '../shared/plannerDates'
@@ -16,7 +16,7 @@ const initialTags: TagRecord[] = [
   { id: '44444444-4444-4444-8444-444444444444', name: 'Ideas', categoryId: initialCategories[0]!.id, color: '#e65b50', count: 0 },
   { id: '55555555-5555-4555-8555-555555555555', name: 'Home', categoryId: initialCategories[1]!.id, color: '#18824b', count: 0 },
 ]
-const stored = (() => { try { return JSON.parse(localStorage.getItem('notable-browser-preview') ?? 'null') as { items: Item[]; categories: Category[]; tags: TagRecord[]; events?: PlannerEvent[] } | null } catch { return null } })()
+const stored = (() => { try { return JSON.parse(localStorage.getItem('notiert-browser-preview') ?? localStorage.getItem('notable-browser-preview') ?? 'null') as { items: Item[]; categories: Category[]; tags: TagRecord[]; events?: PlannerEvent[] } | null } catch { return null } })()
 let items = stored?.items ?? sample
 items = items.map((item) => ({ ...item, categoryId: 'categoryId' in item ? item.categoryId : null })).map((item) => item.kind === 'task' ? { ...item, priorityPosition: 'priorityPosition' in item ? item.priorityPosition : 0, ready: 'ready' in item ? item.ready : Boolean('plannedDate' in item && item.plannedDate), position: 'position' in item ? item.position : 0, beforeEventId: 'beforeEventId' in item ? item.beforeEventId : null } as PlannerTask : item)
 let events: PlannerEvent[] = stored?.events ?? []
@@ -24,7 +24,7 @@ const categories = stored?.categories ?? initialCategories
 const tags = stored?.tags ?? initialTags
 const listeners = new Set<() => void>()
 const listen = (callback: () => void) => { listeners.add(callback); return () => listeners.delete(callback) }
-const changed = () => { localStorage.setItem('notable-browser-preview', JSON.stringify({ items, categories, tags, events })); listeners.forEach((callback) => callback()) }
+const changed = () => { localStorage.setItem('notiert-browser-preview', JSON.stringify({ items, categories, tags, events })); listeners.forEach((callback) => callback()) }
 const ok = <T,>(value: T) => Promise.resolve({ ok: true as const, value })
 const visible = () => items.filter((item) => item.deletedAt === null)
 const tagList = () => tags.map((tag) => ({ ...tag, count: visible().filter((item) => item.tags.includes(tag.name)).length }))
@@ -143,7 +143,7 @@ const api = {
   },
   settings: { get: () => ok(settings), displays: () => ok([]), update: () => ok(settings), onChanged: () => () => {}, openFolder: () => ok(undefined) },
   data: { export: () => ok(undefined), backup: () => ok(undefined), restore: () => ok(undefined), diagnostics: () => ok(undefined) },
-  windows: { openCapture() { window.dispatchEvent(new window.Event('notable:browser-capture')) }, openNotes() {}, openSettings() {}, quit() {}, ready() {}, onView: () => () => {} },
-} as unknown as NotableApi
+  windows: { openCapture() { window.dispatchEvent(new window.Event('notiert:browser-capture')) }, openNotes() {}, openSettings() {}, quit() {}, ready() {}, onView: () => () => {} },
+} as unknown as NotiertApi
 
-Object.defineProperty(window, 'notable', { value: api, configurable: true, writable: true })
+Object.defineProperty(window, 'notiert', { value: api, configurable: true, writable: true })

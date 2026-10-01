@@ -26,13 +26,13 @@ export function Capture() {
   const resizeCapture = useCallback((height: number) => {
     if (requestedHeight.current === height) return
     requestedHeight.current = height
-    window.notable.capture.resize(height)
+    window.notiert.capture.resize(height)
   }, [])
 
   useEffect(() => {
     const refreshCategories = async () => {
       try {
-        const result = await window.notable.capture.categories()
+        const result = await window.notiert.capture.categories()
         if (result.ok) setCategories(result.value)
       } catch { /* Keep capture usable if taxonomy is temporarily unavailable. */ }
     }
@@ -45,8 +45,8 @@ export function Capture() {
       if (next.theme) document.documentElement.dataset.theme = next.theme
       if (next.available !== undefined) void refreshCategories()
     }
-    void window.notable.capture.getState().then((result) => { if (result.ok) apply(result.value) })
-    const unsubscribe = window.notable.capture.onState(apply)
+    void window.notiert.capture.getState().then((result) => { if (result.ok) apply(result.value) })
+    const unsubscribe = window.notiert.capture.onState(apply)
     const focus = () => { inputRef.current?.focus(); inputRef.current?.setSelectionRange(bodyRef.current.length, bodyRef.current.length) }
     window.addEventListener('focus', focus)
     const initialFocus = setTimeout(focus, 40)
@@ -65,7 +65,7 @@ export function Capture() {
   const persistDraft = useCallback(async (draft: string, selectedCategory = categoryId.current) => {
     if (!state.available || saving) return
     revision.current += 1
-    const result = await window.notable.capture.updateDraft({ body: draft, generation: generation.current, revision: revision.current, categoryId: selectedCategory })
+    const result = await window.notiert.capture.updateDraft({ body: draft, generation: generation.current, revision: revision.current, categoryId: selectedCategory })
     if (result.ok) revision.current = Math.max(revision.current, result.value.revision)
   }, [saving, state.available])
 
@@ -78,22 +78,22 @@ export function Capture() {
     const onEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== 'Escape' || !document.querySelector('.capture-card')) return
       event.preventDefault()
-      void flushDraft().finally(() => window.notable.capture.dismiss('escape'))
+      void flushDraft().finally(() => window.notiert.capture.dismiss('escape'))
     }
     window.addEventListener('keydown', onEscape)
     return () => window.removeEventListener('keydown', onEscape)
   }, [flushDraft])
 
   useEffect(() => {
-    const unsubscribe = window.notable.capture.onQuitRequest(() => {
+    const unsubscribe = window.notiert.capture.onQuitRequest(() => {
       clearTimeout(draftTimer.current)
       const draft = bodyRef.current
-      void window.notable.capture.flushBeforeQuit({ body: draft, generation: generation.current, revision: revision.current + 1, categoryId: categoryId.current }).then((result) => {
-        if (result.ok) { revision.current = Math.max(revision.current, result.value.revision); window.notable.capture.respondToQuit(true, draft) }
-        else window.notable.capture.respondToQuit(false, draft)
-      }).catch(() => window.notable.capture.respondToQuit(false, draft))
+      void window.notiert.capture.flushBeforeQuit({ body: draft, generation: generation.current, revision: revision.current + 1, categoryId: categoryId.current }).then((result) => {
+        if (result.ok) { revision.current = Math.max(revision.current, result.value.revision); window.notiert.capture.respondToQuit(true, draft) }
+        else window.notiert.capture.respondToQuit(false, draft)
+      }).catch(() => window.notiert.capture.respondToQuit(false, draft))
     })
-    window.notable.capture.ready()
+    window.notiert.capture.ready()
     return unsubscribe
   }, [])
 
@@ -117,7 +117,7 @@ export function Capture() {
     const id = requestIdRef.current ?? crypto.randomUUID()
     requestIdRef.current = id
     try {
-      const result = await window.notable.capture.submit({ requestId: id, generation: generation.current, body, categoryId: categoryId.current })
+      const result = await window.notiert.capture.submit({ requestId: id, generation: generation.current, body, categoryId: categoryId.current })
       if (!result.ok) { setError(result.message); return }
       setBody('')
       setState((current) => ({ ...current, images: [] }))
@@ -127,7 +127,7 @@ export function Capture() {
       generation.current += 1
       categoryId.current = null
       setState((current) => ({ ...current, categoryId: null }))
-      try { await window.notable.capture.dismiss('saved') } catch { /* The capture is already saved. */ }
+      try { await window.notiert.capture.dismiss('saved') } catch { /* The capture is already saved. */ }
       resizeCapture(categories.length ? 115 : 88)
     } catch { setError('The capture could not be saved. Your text and images are still here. Try again.') }
     finally { savingLock.current = false; setSaving(false) }
@@ -159,7 +159,7 @@ export function Capture() {
               reader.onerror = () => reject(new Error('The image could not be read.'))
               reader.readAsDataURL(file)
             })
-            const result = await window.notable.capture.addImage({ generation: generation.current, dataUrl })
+            const result = await window.notiert.capture.addImage({ generation: generation.current, dataUrl })
             if (!result.ok) throw new Error(result.message)
             setState((current) => ({ ...current, images: [...current.images, result.value] }))
           }
@@ -182,7 +182,7 @@ export function Capture() {
     imagePendingRef.current = true
     setImagePending(true)
     try {
-      const result = await window.notable.capture.removeImage({ generation: generation.current, id })
+      const result = await window.notiert.capture.removeImage({ generation: generation.current, id })
       if (result.ok) setState((current) => ({ ...current, images: current.images.filter((image) => image.id !== id) }))
       else setError(result.message)
     } catch { setError('The image could not be removed. Try again.') }
@@ -193,9 +193,9 @@ export function Capture() {
   return <main className="capture-shell" aria-label="Capture a thought">
     <div className="capture-card">
       <header className="capture-header">
-        <span className="wordmark">notable</span>
-        <button className="icon-button capture-open" title="Open notes" aria-label="Open notes" onClick={() => window.notable.windows.openNotes()}><ArrowUpRight size={15} /></button>
-        <button className="icon-button capture-close" title="Close capture" aria-label="Close capture" onClick={() => void flushDraft().finally(() => window.notable.capture.dismiss('escape'))}><X size={15} /></button>
+        <span className="wordmark">notiert</span>
+        <button className="icon-button capture-open" title="Open notes" aria-label="Open notes" onClick={() => window.notiert.windows.openNotes()}><ArrowUpRight size={15} /></button>
+        <button className="icon-button capture-close" title="Close capture" aria-label="Close capture" onClick={() => void flushDraft().finally(() => window.notiert.capture.dismiss('escape'))}><X size={15} /></button>
       </header>
       <textarea
         ref={inputRef} className="capture-input" rows={1} value={body} maxLength={100000}
@@ -206,7 +206,7 @@ export function Capture() {
         onBlur={(event) => {
           void flushDraft()
           const next = event.relatedTarget
-          if (!(next instanceof Node && event.currentTarget.closest('.capture-card')?.contains(next))) void window.notable.capture.dismiss('blur')
+          if (!(next instanceof Node && event.currentTarget.closest('.capture-card')?.contains(next))) void window.notiert.capture.dismiss('blur')
         }}
       />
       {categories.length > 0 && <label className="capture-category-control"><Folder size={13} /><span>Category</span><select aria-label="Capture category" disabled={saving} value={state.categoryId ?? ''} onChange={(event) => {

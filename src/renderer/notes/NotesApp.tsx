@@ -97,7 +97,7 @@ export function NotesApp() {
 
   const loadSettings = useCallback(async () => {
     try {
-      const [loaded, screens] = await Promise.all([window.notable.settings.get(), window.notable.settings.displays()])
+      const [loaded, screens] = await Promise.all([window.notiert.settings.get(), window.notiert.settings.displays()])
       const nextSettings = resultValue(loaded)
       setSettings(nextSettings)
       setDisplays(resultValue(screens))
@@ -107,10 +107,10 @@ export function NotesApp() {
   }, [])
 
   const loadInboxCount = useCallback(async () => {
-    try { setInboxCount(resultValue(await window.notable.planner.inboxCount())) } catch { /* the Inbox view reports its own load error */ }
+    try { setInboxCount(resultValue(await window.notiert.planner.inboxCount())) } catch { /* the Inbox view reports its own load error */ }
   }, [])
   const loadTags = useCallback(async () => {
-    try { const data = resultValue(await window.notable.notes.taxonomy()); setCategories(data.categories); setTagRecords(data.tags); setAvailableTags(data.tags.map((tag) => tag.name)) } catch { /* Older test fixtures may omit taxonomy. */ }
+    try { const data = resultValue(await window.notiert.notes.taxonomy()); setCategories(data.categories); setTagRecords(data.tags); setAvailableTags(data.tags.map((tag) => tag.name)) } catch { /* Older test fixtures may omit taxonomy. */ }
   }, [])
 
   const filter = useMemo<NoteFilter>(() => {
@@ -126,7 +126,7 @@ export function NotesApp() {
   const loadNotes = useCallback(async (nextCursor?: NotePage['nextCursor'], append = false) => {
     setLoading(true); setError('')
     try {
-      const page = resultValue(await window.notable.notes.list({ ...filter, cursor: nextCursor ?? undefined }))
+      const page = resultValue(await window.notiert.notes.list({ ...filter, cursor: nextCursor ?? undefined }))
       setNotes((current) => append ? [...current, ...page.items] : page.items)
       setTotal(page.total); setCursor(page.nextCursor)
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Notes could not be loaded.') }
@@ -135,14 +135,14 @@ export function NotesApp() {
 
   useEffect(() => { void loadNotes(); setSelected([]) }, [loadNotes])
   useEffect(() => { void loadSettings(); void loadInboxCount(); void loadTags() }, [loadSettings, loadInboxCount, loadTags])
-  useEffect(() => window.notable.notes.onChanged(() => { void loadNotes(); void loadTags() }), [loadNotes, loadTags])
-  useEffect(() => window.notable.planner.onChanged(() => { void loadInboxCount() }), [loadInboxCount])
-  useEffect(() => window.notable.settings.onChanged(() => { void loadSettings() }), [loadSettings])
+  useEffect(() => window.notiert.notes.onChanged(() => { void loadNotes(); void loadTags() }), [loadNotes, loadTags])
+  useEffect(() => window.notiert.planner.onChanged(() => { void loadInboxCount() }), [loadInboxCount])
+  useEffect(() => window.notiert.settings.onChanged(() => { void loadSettings() }), [loadSettings])
   useEffect(() => {
-    void window.notable.updates.getStatus().then((result) => { if (result.ok) setUpdateStatus(result.value) })
-    return window.notable.updates.onChanged(setUpdateStatus)
+    void window.notiert.updates.getStatus().then((result) => { if (result.ok) setUpdateStatus(result.value) })
+    return window.notiert.updates.onChanged(setUpdateStatus)
   }, [])
-  useEffect(() => { const unsubscribe = window.notable.windows.onView((next) => requestLeaveRef.current(() => { setView(next); setDetailId(null); setDetail(null); setSelected([]) })); window.notable.windows.ready(); return unsubscribe }, [])
+  useEffect(() => { const unsubscribe = window.notiert.windows.onView((next) => requestLeaveRef.current(() => { setView(next); setDetailId(null); setDetail(null); setSelected([]) })); window.notiert.windows.ready(); return unsubscribe }, [])
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return
@@ -169,17 +169,17 @@ export function NotesApp() {
   })
 
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 2600); return () => clearTimeout(timer) }, [toast])
-  useEffect(() => { const open = () => setBrowserCaptureOpen(true); window.addEventListener('notable:browser-capture', open); return () => window.removeEventListener('notable:browser-capture', open) }, [])
+  useEffect(() => { const open = () => setBrowserCaptureOpen(true); window.addEventListener('notiert:browser-capture', open); return () => window.removeEventListener('notiert:browser-capture', open) }, [])
 
   async function submitBrowserCapture() {
     if (!browserCaptureText.trim()) return
-    try { resultValue(await window.notable.capture.submit({ requestId: crypto.randomUUID(), generation: 0, body: browserCaptureText, categoryId: browserCaptureCategoryId })); setBrowserCaptureText(''); setBrowserCaptureCategoryId(null); setBrowserCaptureOpen(false); nav('inbox') }
+    try { resultValue(await window.notiert.capture.submit({ requestId: crypto.randomUUID(), generation: 0, body: browserCaptureText, categoryId: browserCaptureCategoryId })); setBrowserCaptureText(''); setBrowserCaptureCategoryId(null); setBrowserCaptureOpen(false); nav('inbox') }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Capture could not be saved.') }
   }
 
   async function openNote(id: string) {
     setDetailId(id); setEditing(false); setDiscardPrompt(false)
-    try { const record = resultValue(await window.notable.notes.get(id)); setDetail(record); if (record) { setEditText(record.body); setEditTags(record.tags); setEditCategoryId(record.categoryId); setTagDraft('') } }
+    try { const record = resultValue(await window.notiert.notes.get(id)); setDetail(record); if (record) { setEditText(record.body); setEditTags(record.tags); setEditCategoryId(record.categoryId); setTagDraft('') } }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'This note could not be opened.') }
   }
   function clearFilters() { setQuery(''); setDateRange('all'); setKindFilters([]); setTagFilters([]) }
@@ -188,17 +188,17 @@ export function NotesApp() {
   function openCategory(category: Category) { requestLeaveRef.current(() => { setSelectedCategoryId(category.id); setSelectedTagId(null); setView('category'); setDetailId(null); setFocusedId(null); setDetail(null); setSelected([]); clearFilters() }) }
   async function addCategory() {
     if (!categoryDraft.trim()) return
-    try { const category = resultValue(await window.notable.notes.createCategory(categoryDraft)); setCategoryDraft(''); setNewCategory(false); setCategoriesOpen(true); setExpandedCategories((current) => ({ ...current, [category.id]: true })); void loadTags() }
+    try { const category = resultValue(await window.notiert.notes.createCategory(categoryDraft)); setCategoryDraft(''); setNewCategory(false); setCategoriesOpen(true); setExpandedCategories((current) => ({ ...current, [category.id]: true })); void loadTags() }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Category could not be added.') }
   }
   async function addTag(categoryId: string | null) {
     if (!tagNameDraft.trim()) return
-    try { const tag = resultValue(await window.notable.notes.createTag({ name: tagNameDraft, categoryId })); setTagNameDraft(''); setAddingTagTo(null); void loadTags(); openTag(tag) }
+    try { const tag = resultValue(await window.notiert.notes.createTag({ name: tagNameDraft, categoryId })); setTagNameDraft(''); setAddingTagTo(null); void loadTags(); openTag(tag) }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Tag could not be added.') }
   }
   async function changeTag(input: { categoryId: string | null; color: string }) {
     if (!selectedTagId) return
-    try { resultValue(await window.notable.notes.updateTag({ id: selectedTagId, ...input })); void loadTags() }
+    try { resultValue(await window.notiert.notes.updateTag({ id: selectedTagId, ...input })); void loadTags() }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Tag could not be updated.') }
   }
   const selectedTag = tagRecords.find((tag) => tag.id === selectedTagId) ?? null
@@ -208,7 +208,7 @@ export function NotesApp() {
   async function saveEdit() {
     if (!detail) return
     try {
-      const updated = resultValue(await window.notable.notes.updateItem({ id: detail.id, expectedRevision: detail.revision, body: editText, tags: collectTags(editTags, tagDraft), categoryId: editCategoryId }))
+      const updated = resultValue(await window.notiert.notes.updateItem({ id: detail.id, expectedRevision: detail.revision, body: editText, tags: collectTags(editTags, tagDraft), categoryId: editCategoryId }))
       setDetail(updated); setEditTags(updated.tags); setEditCategoryId(updated.categoryId); setTagDraft('')
       setEditing(false); setToast('Changes saved')
       const next = pendingEditorAction.current; pendingEditorAction.current = null; next?.()
@@ -220,44 +220,44 @@ export function NotesApp() {
       if (beforeId === null && cursor) {
         let nextCursor: typeof cursor | null = cursor
         while (nextCursor && beforeId === null) {
-          const nextPage: NotePage = resultValue(await window.notable.notes.list({ ...filter, cursor: nextCursor }))
+          const nextPage: NotePage = resultValue(await window.notiert.notes.list({ ...filter, cursor: nextCursor }))
           beforeId = nextPage.items.find((item) => item.kind === 'task' && item.categoryId === categoryId)?.id ?? null
           nextCursor = nextPage.nextCursor
         }
       }
-      resultValue(await window.notable.planner.reorderBacklog({ id, categoryId, beforeId })); await loadNotes()
+      resultValue(await window.notiert.planner.reorderBacklog({ id, categoryId, beforeId })); await loadNotes()
     }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'To-do priority could not be saved.') }
   }
   async function trashSelected() {
     if (!selected.length) return
-    try { resultValue(await window.notable.notes.trash(selected)); setSelected([]); setDetailId(null); setDetail(null); setToast(`${selected.length} ${selected.length === 1 ? 'note moved' : 'notes moved'} to Trash`) }
+    try { resultValue(await window.notiert.notes.trash(selected)); setSelected([]); setDetailId(null); setDetail(null); setToast(`${selected.length} ${selected.length === 1 ? 'note moved' : 'notes moved'} to Trash`) }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Notes could not be moved to Trash.') }
   }
   async function copyIds(ids: string[]) {
-    try { const text = resultValue(await window.notable.notes.copy(ids)); setToast(text ? 'Copied to clipboard' : 'Nothing to copy') }
+    try { const text = resultValue(await window.notiert.notes.copy(ids)); setToast(text ? 'Copied to clipboard' : 'Nothing to copy') }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not copy notes.') }
   }
   async function exportData(scope: 'selected' | 'all' | 'full', ids?: string[]) {
     if (scope === 'selected' && !ids?.length) return
-    try { resultValue(await window.notable.data.export({ scope, format: 'md', ids })); setToast('Export ready') }
+    try { resultValue(await window.notiert.data.export({ scope, format: 'md', ids })); setToast('Export ready') }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Export failed.') }
   }
   const toggleSelected = (id: string) => {
     if (!selected.includes(id) && selected.length >= 500) { setToast('Select up to 500 notes at a time'); return }
     setSelected((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
   }
-  async function restoreOne(id: string) { try { resultValue(await window.notable.notes.restore([id])); setToast('Note restored') } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not restore note.') } }
-  async function deleteOne(id: string) { try { resultValue(await window.notable.notes.deletePermanently([id])); setToast('Note deleted permanently'); setDetailId(null); setDetail(null) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not delete note.') } }
-  async function emptyTrash() { try { resultValue(await window.notable.notes.emptyTrash()); setToast('Trash emptied'); setDetailId(null); setDetail(null) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not empty Trash.') } }
+  async function restoreOne(id: string) { try { resultValue(await window.notiert.notes.restore([id])); setToast('Note restored') } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not restore note.') } }
+  async function deleteOne(id: string) { try { resultValue(await window.notiert.notes.deletePermanently([id])); setToast('Note deleted permanently'); setDetailId(null); setDetail(null) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not delete note.') } }
+  async function emptyTrash() { try { resultValue(await window.notiert.notes.emptyTrash()); setToast('Trash emptied'); setDetailId(null); setDetail(null) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not empty Trash.') } }
 
   const saveSettings = async (update: Partial<Pick<Settings, 'shortcut' | 'shortcutEnabled' | 'launchAtLogin' | 'theme' | 'monitor' | 'captureProtection' | 'protectionTestApp' | 'protectionTestDate' | 'closeToTray' | 'firstRunComplete'>>) => {
-    try { const saved = resultValue(await window.notable.settings.update(update)); setSettings(saved); document.documentElement.dataset.theme = saved.theme; return true }
+    try { const saved = resultValue(await window.notiert.settings.update(update)); setSettings(saved); document.documentElement.dataset.theme = saved.theme; return true }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Setting could not be saved.'); return false }
   }
   const finishFirstRun = async (shortcut: string, launchAtLogin: boolean) => {
     const done = await saveSettings({ shortcut, shortcutEnabled: true, launchAtLogin, firstRunComplete: true })
-    if (done) { setFirstRun(false); setToast('Setup complete'); window.notable.windows.openCapture() }
+    if (done) { setFirstRun(false); setToast('Setup complete'); window.notiert.windows.openCapture() }
   }
   const continueTrayOnly = async (launchAtLogin: boolean) => {
     const done = await saveSettings({ shortcutEnabled: false, launchAtLogin, firstRunComplete: true })
@@ -269,7 +269,7 @@ export function NotesApp() {
     if (!notes.length && !loading && !error) return <div className="empty-state">
       <div className="empty-mark"><FileText size={20} /></div><h2>{view === 'tag' && !hasFilters ? 'No items with this tag yet.' : view === 'category' && !hasFilters ? 'No items in this category yet.' : hasFilters ? 'No matching items.' : view === 'trash' ? 'Trash is empty.' : 'Your next thought goes here.'}</h2>
       <p>{hasFilters ? 'Try another phrase or clear the filters.' : view === 'tag' ? 'Items using this tag will appear here.' : view === 'category' ? 'Items assigned to this category will appear here, including items with no tag.' : view === 'trash' ? 'Deleted items stay here until you remove them permanently.' : `Press ${settings?.shortcut.replace('Control', 'Ctrl') ?? 'Ctrl+N'} from any app to capture an item.`}</p>
-      {hasFilters ? <button className="button secondary" onClick={() => requestEditorLeave(clearFilters)}>Clear filters</button> : view === 'all' && <button className="button primary" onClick={() => window.notable.windows.openCapture()}>Capture a thought <ArrowRight size={15} /></button>}
+      {hasFilters ? <button className="button secondary" onClick={() => requestEditorLeave(clearFilters)}>Clear filters</button> : view === 'all' && <button className="button primary" onClick={() => window.notiert.windows.openCapture()}>Capture a thought <ArrowRight size={15} /></button>}
     </div>
     const renderRow = (note: NoteDetail, sortable?: SortableRowProps) => <article ref={sortable?.ref} style={sortable?.style} key={note.id} data-note-id={note.id} className={`note-row ${sortable ? 'priority-note-row' : ''} ${detailId === note.id || focusedId === note.id ? 'is-active' : ''} ${selected.includes(note.id) ? 'is-selected' : ''}`}>
       {sortable && <button type="button" className="note-drag-handle" aria-label={`Reorder to-do ${note.body.trim() ? excerpt(note.body).slice(0, 80) : 'without a title'}`} title="Drag to change priority" {...sortable.attributes} {...sortable.listeners}><GripVertical size={14} /></button>}
@@ -326,8 +326,8 @@ export function NotesApp() {
 
   return <div className="notes-window">
     <aside className="sidebar">
-      <button className="brand" onClick={() => nav('all')}><span className="brand-glyph">n</span><span>notable</span></button>
-      <button type="button" className="sidebar-capture" aria-label="Capture" title="Capture a thought" onClick={() => window.notable.windows.openCapture()}><Plus size={16} /><span>Capture</span><kbd>{settings?.shortcut.replace('Control', 'Ctrl') ?? 'Ctrl+N'}</kbd></button>
+      <button className="brand" onClick={() => nav('all')}><span className="brand-glyph">n</span><span>notiert</span></button>
+      <button type="button" className="sidebar-capture" aria-label="Capture" title="Capture a thought" onClick={() => window.notiert.windows.openCapture()}><Plus size={16} /><span>Capture</span><kbd>{settings?.shortcut.replace('Control', 'Ctrl') ?? 'Ctrl+N'}</kbd></button>
       <div className="side-label">WORKSPACE</div>
       <nav className="side-nav" aria-label="Main navigation">
         <button className={view === 'inbox' ? 'active' : ''} onClick={() => nav('inbox')}><Archive size={16} /><span>Inbox</span><span className="side-count">{inboxCount || ''}</span></button>
@@ -350,7 +350,7 @@ export function NotesApp() {
       </div>
     </aside>
     <main className="main-area">
-      {view === 'settings' ? <SettingsPanel settings={settings} displays={displays} saveSettings={saveSettings} onBackup={async () => { try { resultValue(await window.notable.data.backup()); setToast('Backup created') } catch (reason) { setError(reason instanceof Error ? reason.message : 'Backup failed.') } }} onRestore={async () => { try { resultValue(await window.notable.data.restore()); setToast('Backup restored') } catch (reason) { setError(reason instanceof Error ? reason.message : 'Restore failed.') } }} firstRun={firstRun} onFinish={finishFirstRun} onTrayOnly={continueTrayOnly} recordingShortcut={recordingShortcut} setRecordingShortcut={setRecordingShortcut} onShortcutKey={onShortcutKey} />
+      {view === 'settings' ? <SettingsPanel settings={settings} displays={displays} saveSettings={saveSettings} onBackup={async () => { try { resultValue(await window.notiert.data.backup()); setToast('Backup created') } catch (reason) { setError(reason instanceof Error ? reason.message : 'Backup failed.') } }} onRestore={async () => { try { resultValue(await window.notiert.data.restore()); setToast('Backup restored') } catch (reason) { setError(reason instanceof Error ? reason.message : 'Restore failed.') } }} firstRun={firstRun} onFinish={finishFirstRun} onTrayOnly={continueTrayOnly} recordingShortcut={recordingShortcut} setRecordingShortcut={setRecordingShortcut} onShortcutKey={onShortcutKey} />
       : view === 'inbox' ? <InboxView onOpen={(id) => requestEditorLeave(() => { setView('all'); setSelectedCategoryId(null); setSelectedTagId(null); clearFilters(); setDetailId(id); setSelected([]); void openNote(id) })} />
       : view === 'calenban' ? <CalenbanView />
       : view === 'backlog' ? <BacklogView />
@@ -358,11 +358,11 @@ export function NotesApp() {
         <header className="main-header">
           <div className="title-stack"><div className="eyebrow">{view === 'trash' ? 'ARCHIVE' : view === 'tag' || view === 'category' ? 'CATEGORY / TAG' : 'YOUR NOTES & TO-DOS'}</div><h1>{view === 'trash' ? 'Trash' : view === 'tag' ? selectedTag?.name ?? 'Tag' : view === 'category' ? selectedCategory?.name ?? 'Category' : 'All items'} <span className="title-count">{total.toLocaleString()}</span></h1></div>
           <div className="header-actions">
-            {updateStatus.status === 'available' && <button className="update-pill" onClick={() => void window.notable.updates.check()}>Downloading update{updateStatus.version ? ` · v${updateStatus.version}` : ''}</button>}
-            {updateStatus.status === 'downloaded' && <button className="update-pill is-ready" onClick={() => void window.notable.updates.install()}>Restart to update{updateStatus.version ? ` · v${updateStatus.version}` : ''}</button>}
+            {updateStatus.status === 'available' && <button className="update-pill" onClick={() => void window.notiert.updates.check()}>Downloading update{updateStatus.version ? ` · v${updateStatus.version}` : ''}</button>}
+            {updateStatus.status === 'downloaded' && <button className="update-pill is-ready" onClick={() => void window.notiert.updates.install()}>Restart to update{updateStatus.version ? ` · v${updateStatus.version}` : ''}</button>}
             {view === 'trash' && total > 0 && <button className="button secondary" onClick={() => void emptyTrash()}><Trash2 size={14} /> Empty trash</button>}
-            <button className="button secondary capture-button" onClick={() => window.notable.windows.openCapture()}><Plus size={15} /> Capture</button>
-            <div className="menu-wrap"><button className="icon-button bordered" aria-label="More actions" title="More actions" onClick={(event) => { const menu = event.currentTarget.nextElementSibling; menu?.classList.toggle('is-open') }}><MoreHorizontal size={17} /></button><div className="pop-menu"><button onClick={() => void exportData('all')}><Download size={14} /> Export notes</button><button onClick={() => void exportData('full')}><Archive size={14} /> Export full archive</button><button onClick={() => void window.notable.settings.openFolder()}><FolderOpen size={14} /> Open data folder</button></div></div>
+            <button className="button secondary capture-button" onClick={() => window.notiert.windows.openCapture()}><Plus size={15} /> Capture</button>
+            <div className="menu-wrap"><button className="icon-button bordered" aria-label="More actions" title="More actions" onClick={(event) => { const menu = event.currentTarget.nextElementSibling; menu?.classList.toggle('is-open') }}><MoreHorizontal size={17} /></button><div className="pop-menu"><button onClick={() => void exportData('all')}><Download size={14} /> Export notes</button><button onClick={() => void exportData('full')}><Archive size={14} /> Export full archive</button><button onClick={() => void window.notiert.settings.openFolder()}><FolderOpen size={14} /> Open data folder</button></div></div>
           </div>
         </header>
         {view === 'tag' && selectedTag && <div className="tag-page-settings"><span className="tag-page-icon" style={{ color: selectedTag.color }}><Hash size={18} /></span><div className="tag-page-description"><b>{selectedTag.name}</b><small>{total} {total === 1 ? 'item' : 'items'} with this tag</small></div><label><Palette size={14} /> Color <input type="color" aria-label={`Color for ${selectedTag.name}`} value={selectedTag.color} onChange={(event) => void changeTag({ categoryId: selectedTag.categoryId, color: event.target.value })} /></label><label>Category <select aria-label={`Category for ${selectedTag.name}`} value={selectedTag.categoryId ?? ''} onChange={(event) => void changeTag({ categoryId: event.target.value || null, color: selectedTag.color })}><option value="">Unassigned</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label></div>}
@@ -378,14 +378,14 @@ export function NotesApp() {
           {view !== 'tag' && <div className="filter-row"><span className="filter-heading">TAGS</span><div className="tag-filter-options"><input className="tag-filter-search" aria-label="Find a tag filter" placeholder="Find a tag…" value={tagSearch} onChange={(event) => setTagSearch(event.target.value)} /><div className="filter-pills" aria-label="Tag filters">{availableTags.filter((tag) => tag.toLocaleLowerCase().includes(tagSearch.toLocaleLowerCase())).map((tag) => <button key={tag} className={`filter-pill ${tagFilters.includes(tag) ? 'is-selected' : ''}`} aria-pressed={tagFilters.includes(tag)} onClick={() => toggleTag(tag)}><Hash size={11} style={{ color: tagRecords.find((record) => record.name === tag)?.color }} />{tag}</button>)}{!availableTags.some((tag) => tag.toLocaleLowerCase().includes(tagSearch.toLocaleLowerCase())) && <span className="filter-hint">{availableTags.length ? 'No matching tags' : 'No tags yet'}</span>}</div></div></div>}
           <div className="filter-row"><span className="filter-heading">DATE</span><div className="filter-pills" aria-label="Date filters">{dateOptions.map(({ value, label }) => <button key={value} className={`filter-pill ${dateRange === value ? 'is-selected' : ''}`} aria-pressed={dateRange === value} onClick={() => requestEditorLeave(() => setDateRange(value))}>{label}</button>)}</div><button className="filter-clear" onClick={() => requestEditorLeave(clearFilters)} disabled={!query && !kindFilters.length && !tagFilters.length && dateRange === 'all'}>Clear all</button></div>
         </div>}
-        {selected.length > 0 && <div className="selection-toolbar"><span>{selected.length} selected</span><button className="text-action" onClick={() => void copyIds(selected)}><Copy size={14} /> Copy</button><button className="text-action" onClick={() => void exportData('selected', selected)}><Download size={14} /> Export</button>{view === 'trash' ? <><button className="text-action" onClick={async () => { try { resultValue(await window.notable.notes.restore(selected)); setSelected([]) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not restore notes.') } }}><Undo2 size={14} /> Restore</button><button className="text-action danger-action" onClick={async () => { try { resultValue(await window.notable.notes.deletePermanently(selected)); setSelected([]) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not delete notes.') } }}><Trash2 size={14} /> Delete permanently</button></> : <button className="text-action danger-action" onClick={() => void trashSelected()}><Trash2 size={14} /> Move to Trash</button>}</div>}
+        {selected.length > 0 && <div className="selection-toolbar"><span>{selected.length} selected</span><button className="text-action" onClick={() => void copyIds(selected)}><Copy size={14} /> Copy</button><button className="text-action" onClick={() => void exportData('selected', selected)}><Download size={14} /> Export</button>{view === 'trash' ? <><button className="text-action" onClick={async () => { try { resultValue(await window.notiert.notes.restore(selected)); setSelected([]) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not restore notes.') } }}><Undo2 size={14} /> Restore</button><button className="text-action danger-action" onClick={async () => { try { resultValue(await window.notiert.notes.deletePermanently(selected)); setSelected([]) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not delete notes.') } }}><Trash2 size={14} /> Delete permanently</button></> : <button className="text-action danger-action" onClick={() => void trashSelected()}><Trash2 size={14} /> Move to Trash</button>}</div>}
         <div className={`content-grid ${detailId ? 'has-detail' : ''}`}>
           <div className={`list-column ${detailId && window.innerWidth < 960 ? 'mobile-hidden' : ''}`} ref={noteListRef}>
             {error && <div className="inline-error" role="alert"><Info size={15} /><span>{error}</span><button onClick={() => { setError(''); void loadNotes() }}>Retry</button></div>}
             {loading && !notes.length ? <div className="loading-state"><span className="spinner" /> Loading notes…</div> : renderRows()}
           </div>
           {detailId && <section className="detail-panel" aria-label="Note details">
-            <div className="detail-top"><button className="back-button" onClick={() => requestEditorLeave(() => { setDetailId(null); setDetail(null) })}><ArrowLeft size={15} /> <span>Back</span></button><div className="detail-actions">{!editing ? <><button className="icon-button" title="Copy note" aria-label="Copy note" onClick={() => void copyIds([detailId])}><Copy size={15} /></button>{view === 'trash' ? <><button className="icon-button" title="Restore note" aria-label="Restore note" onClick={() => void restoreOne(detailId)}><Undo2 size={15} /></button><button className="icon-button danger-icon" title="Delete permanently" aria-label="Delete permanently" onClick={() => void deleteOne(detailId)}><Trash2 size={15} /></button></> : <button className="icon-button danger-icon" title="Move to Trash" aria-label="Move to Trash" onClick={() => void trashSelectedFromDetail(detailId, window.notable, setToast, setError, setDetailId, setDetail)}><Trash2 size={15} /></button>}</> : <><button className="button secondary small" onClick={() => hasEdits ? setDiscardPrompt(true) : setEditing(false)}>Cancel</button><button className="button primary small" onClick={() => void saveEdit()}><Check size={14} /> Save</button></>}</div></div>
+            <div className="detail-top"><button className="back-button" onClick={() => requestEditorLeave(() => { setDetailId(null); setDetail(null) })}><ArrowLeft size={15} /> <span>Back</span></button><div className="detail-actions">{!editing ? <><button className="icon-button" title="Copy note" aria-label="Copy note" onClick={() => void copyIds([detailId])}><Copy size={15} /></button>{view === 'trash' ? <><button className="icon-button" title="Restore note" aria-label="Restore note" onClick={() => void restoreOne(detailId)}><Undo2 size={15} /></button><button className="icon-button danger-icon" title="Delete permanently" aria-label="Delete permanently" onClick={() => void deleteOne(detailId)}><Trash2 size={15} /></button></> : <button className="icon-button danger-icon" title="Move to Trash" aria-label="Move to Trash" onClick={() => void trashSelectedFromDetail(detailId, window.notiert, setToast, setError, setDetailId, setDetail)}><Trash2 size={15} /></button>}</> : <><button className="button secondary small" onClick={() => hasEdits ? setDiscardPrompt(true) : setEditing(false)}>Cancel</button><button className="button primary small" onClick={() => void saveEdit()}><Check size={14} /> Save</button></>}</div></div>
             {!detail ? <div className="detail-loading"><span className="spinner" /></div> : <>
               <div className="detail-meta"><span>{formatDateTime(detail.createdAt)}</span>{detail.updatedAt !== detail.createdAt && <span>Edited {formatDateTime(detail.updatedAt)}</span>}</div>
               {editing ? <><textarea className="note-editor" value={editText} onChange={(event) => setEditText(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); if (hasEdits) setDiscardPrompt(true); else setEditing(false) } }} aria-label="Edit item" /><label className="detail-category-select">Category <select aria-label="Item category" value={editCategoryId ?? ''} onChange={(event) => setEditCategoryId(event.target.value || null)}><option value="">Unassigned</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><div className="detail-tags"><span className="tags-field-label">Tags</span><TagEditor tags={editTags} draft={tagDraft} onTagsChange={setEditTags} onDraftChange={setTagDraft} suggestions={availableTags} /></div></> : <div className="detail-note-text">{detail.body || (detail.images.length ? null : <span className="muted">Empty item</span>)}</div>}
@@ -402,7 +402,7 @@ export function NotesApp() {
   </div>
 }
 
-async function trashSelectedFromDetail(id: string, api: Window['notable'], setToast: (value: string) => void, setError: (value: string) => void, setDetailId: (value: string | null) => void, setDetail: (value: NoteDetail | null) => void) {
+async function trashSelectedFromDetail(id: string, api: Window['notiert'], setToast: (value: string) => void, setError: (value: string) => void, setDetailId: (value: string | null) => void, setDetail: (value: NoteDetail | null) => void) {
   const result = await api.notes.trash([id])
   if (result.ok) { setDetailId(null); setDetail(null); setToast('Note moved to Trash') } else setError(result.message)
 }
@@ -445,20 +445,20 @@ function SettingsPanel({ settings, displays, saveSettings, onBackup, onRestore, 
   return <div className="settings-layout">
     <aside className="settings-nav"><div className="settings-title"><div className="eyebrow">PREFERENCES</div><h1>Settings</h1></div>{sectionItems.map(({ id, label, icon: Icon }) => <button className={activeSection === id ? 'active' : ''} aria-label={label} title={label} aria-current={activeSection === id ? 'page' : undefined} key={id} onClick={() => setActiveSection(id)}><Icon size={15} />{label}</button>)}</aside>
     <section className="settings-content">
-      {activeSection === 'general' && <><div className="settings-heading"><h2>General</h2><p>Choose how notable behaves on this device.</p></div>
-        <div className="setting-row"><div><b>Capture shortcut</b><span>Opens the capture bar from any app. While notable runs, Ctrl+N replaces the usual New shortcut.</span></div><div className="shortcut-control"><button className={`button secondary ${recordingShortcut ? 'recording' : ''}`} onClick={() => setRecordingShortcut(true)} onKeyDown={onShortcutKey}>{recordingShortcut ? 'Press a shortcut…' : shortcutDisplay}</button><span className={`status-dot ${settings?.shortcutRegistered ? 'good' : 'bad'}`} />{!settings?.shortcutRegistered && <small>Unavailable</small>}</div></div>
+      {activeSection === 'general' && <><div className="settings-heading"><h2>General</h2><p>Choose how notiert behaves on this device.</p></div>
+        <div className="setting-row"><div><b>Capture shortcut</b><span>Opens the capture bar from any app. While notiert runs, Ctrl+N replaces the usual New shortcut.</span></div><div className="shortcut-control"><button className={`button secondary ${recordingShortcut ? 'recording' : ''}`} onClick={() => setRecordingShortcut(true)} onKeyDown={onShortcutKey}>{recordingShortcut ? 'Press a shortcut…' : shortcutDisplay}</button><span className={`status-dot ${settings?.shortcutRegistered ? 'good' : 'bad'}`} />{!settings?.shortcutRegistered && <small>Unavailable</small>}</div></div>
         <div className="setting-row"><div><b>Global shortcut</b><span>Turn off keyboard capture and use the tray menu instead.</span></div><Toggle checked={settings?.shortcutEnabled ?? true} onChange={(value) => void saveSettings({ shortcutEnabled: value })} label="Global capture shortcut" /></div>
-        <div className="setting-row"><div><b>Launch at login</b><span>Start notable quietly when you sign in to Windows.</span></div><Toggle checked={settings?.launchAtLogin ?? false} onChange={(value) => void saveSettings({ launchAtLogin: value })} label="Launch at login" /></div>
+        <div className="setting-row"><div><b>Launch at login</b><span>Start notiert quietly when you sign in to Windows.</span></div><Toggle checked={settings?.launchAtLogin ?? false} onChange={(value) => void saveSettings({ launchAtLogin: value })} label="Launch at login" /></div>
         <div className="setting-row"><div><b>Close to tray</b><span>Closing the notes window keeps capture ready in the system tray. Use Quit in the tray menu to exit.</span></div><Toggle checked={settings?.closeToTray ?? true} onChange={(value) => void saveSettings({ closeToTray: value })} label="Close to tray" /></div>
         <div className="setting-row"><div><b>Capture display</b><span>Choose where the capture bar appears. Missing displays fall back to the pointer's display.</span></div><select className="filter-select setting-select" value={settings?.monitor ?? 'active'} onChange={(event) => void saveSettings({ monitor: event.target.value })}><option value="active">Active window / pointer</option><option value="pointer">Mouse pointer</option><option value="primary">Primary display</option>{displays.map((display) => <option key={display.id} value={`display:${display.id}`}>{display.label}</option>)}</select></div>
         <div className="setting-row"><div><b>Shortcut registration</b><span>{settings?.shortcutRegistered ? 'Ready. The global shortcut is registered.' : 'The selected shortcut could not be registered. Tray capture remains available.'}</span></div><span className={`status-label ${settings?.shortcutRegistered ? 'success' : 'warning'}`}>{settings?.shortcutRegistered ? 'Ready' : 'Tray only'}</span></div>
       </>}
       {activeSection === 'appearance' && <><div className="settings-heading"><h2>Appearance</h2><p>Keep the interface comfortable in any room.</p></div><div className="theme-choices">{(['system', 'light', 'dark'] as const).map((theme) => <button className={`theme-card ${settings?.theme === theme ? 'selected' : ''}`} key={theme} onClick={() => void saveSettings({ theme })}><div className={`theme-swatch ${theme}`}><span /><i /><i /><i /></div><div><b>{theme === 'system' ? 'System' : theme[0]!.toUpperCase() + theme.slice(1)}</b><span>{theme === 'system' ? 'Follow Windows' : `Use ${theme} appearance`}</span></div>{settings?.theme === theme && <Check size={15} />}</button>)}</div><div className="setting-note"><CircleHelp size={15} /> Geist Sans and Geist Mono are bundled for offline use.</div></>}
-      {activeSection === 'sharing' && <><div className="settings-heading"><h2>Screen sharing</h2><p>Ask Windows to exclude notable windows from supported captures.</p></div><div className="protection-card"><div className="protection-icon"><Shield size={17} /></div><div><b>Request capture exclusion</b><span>Best effort. Whether notes are excluded depends on Windows and the meeting or recording app.</span></div><Toggle checked={settings?.captureProtection ?? true} onChange={async (value) => { if (!value && !window.confirm('Notes may appear in screen shares and recordings when exclusion is off. Turn it off?')) return; await saveSettings({ captureProtection: value }) }} label="Capture exclusion" /></div><div className="privacy-copy"><b>Test from another participant's view</b><p>Start a test meeting, share your screen, open notable, and ask someone on another device whether the capture bar and notes window appear. Repeat after changing the meeting app or Windows version.</p><p>File pickers are native Windows windows and may still be visible. Open export and restore dialogs outside a presentation.</p></div><div className="setting-row"><div><b>Last manual test</b><span>{settings?.protectionTestDate ? settings.protectionTestOS ? `Recorded ${settings.protectionTestDate} · Windows ${settings.protectionTestOS}. Retest after changing the meeting app or Windows build.` : 'The Windows build changed since this test. Retest this setup.' : 'Record what you tested. This is a reminder, not technical verification.'}</span></div><div className="test-fields"><input className="text-field" value={testApp} maxLength={80} placeholder="App / version / mode" onChange={(event) => setTestApp(event.target.value)} /><button className="button secondary small" onClick={() => { const date = todayISO(); void saveSettings({ protectionTestApp: testApp, protectionTestDate: date }) }}>Record today’s test</button></div></div><div className="setting-note warning-note"><Info size={15} /> Exclusion does not protect against remote control, malicious capture tools, or cameras. File pickers may be visible; open them outside a presentation.</div></>}
-      {activeSection === 'data' && <><div className="settings-heading"><h2>Data</h2><p>Your notes are stored locally and are not encrypted by notable.</p></div><div className="data-location"><div className="data-folder-icon"><FolderOpen size={18} /></div><div><b>Local storage</b><span>SQLite database · app data folder</span></div><button className="button secondary small" onClick={() => void window.notable.settings.openFolder()}>Open folder</button></div><div className="data-actions"><div><b>Export notes</b><span>Save plain text or Markdown to a folder you choose.</span></div><div><button className="button secondary small" onClick={() => void window.notable.data.export({ scope: 'all', format: 'txt' })}>Export TXT</button><button className="button secondary small" onClick={() => void window.notable.data.export({ scope: 'all', format: 'md' })}>Export Markdown</button></div></div><div className="data-actions"><div><b>SQLite backup</b><span>{settings?.backupWarning ? 'The last backup failed. Notes can still save; try creating a backup again.' : settings?.lastBackupAt ? `Last backup ${formatDateTime(settings.lastBackupAt)}.` : 'No backup has been created yet.'} A full recovery snapshot of notes, tags, tasks, scheduled meetings, and Trash.</span></div><div><button className="button secondary small" onClick={() => void onBackup()}>Create backup</button><button className="button secondary small" onClick={() => void onRestore()}>Restore backup</button></div></div><div className="setting-note"><Info size={15} /> Restoring replaces current data. notable creates a safety backup first. Independent backups can retain notes removed from Trash. Do not sync the live SQLite database through a shared folder.</div></>}
-      {activeSection === 'about' && <><div className="settings-heading"><h2>About notable</h2><p>A quiet, local desktop utility for capturing a thought during a meeting.</p></div><div className="about-card"><div className="about-logo">n</div><div><b>notable</b><span>Version 0.1.0 · Windows 11 x64</span></div></div><div className="setting-row"><div><b>Local diagnostics</b><span>Exports app version, Windows build, shortcut status, and database availability. No note or meeting content.</span></div><button className="button secondary small" onClick={async () => { const result = await window.notable.data.diagnostics(); if (!result.ok) window.alert(result.message) }}>Export diagnostics</button></div><div className="license-box"><b>Third-party licenses</b><p>Electron · Chromium · React · ReUI · dnd-kit · Geist typefaces · Lucide icons · SQLite · other bundled dependencies.</p><p>See the licenses folder in the installed app for full notices.</p></div></>}
+      {activeSection === 'sharing' && <><div className="settings-heading"><h2>Screen sharing</h2><p>Ask Windows to exclude notiert windows from supported captures.</p></div><div className="protection-card"><div className="protection-icon"><Shield size={17} /></div><div><b>Request capture exclusion</b><span>Best effort. Whether notes are excluded depends on Windows and the meeting or recording app.</span></div><Toggle checked={settings?.captureProtection ?? true} onChange={async (value) => { if (!value && !window.confirm('Notes may appear in screen shares and recordings when exclusion is off. Turn it off?')) return; await saveSettings({ captureProtection: value }) }} label="Capture exclusion" /></div><div className="privacy-copy"><b>Test from another participant's view</b><p>Start a test meeting, share your screen, open notiert, and ask someone on another device whether the capture bar and notes window appear. Repeat after changing the meeting app or Windows version.</p><p>File pickers are native Windows windows and may still be visible. Open export and restore dialogs outside a presentation.</p></div><div className="setting-row"><div><b>Last manual test</b><span>{settings?.protectionTestDate ? settings.protectionTestOS ? `Recorded ${settings.protectionTestDate} · Windows ${settings.protectionTestOS}. Retest after changing the meeting app or Windows build.` : 'The Windows build changed since this test. Retest this setup.' : 'Record what you tested. This is a reminder, not technical verification.'}</span></div><div className="test-fields"><input className="text-field" value={testApp} maxLength={80} placeholder="App / version / mode" onChange={(event) => setTestApp(event.target.value)} /><button className="button secondary small" onClick={() => { const date = todayISO(); void saveSettings({ protectionTestApp: testApp, protectionTestDate: date }) }}>Record today’s test</button></div></div><div className="setting-note warning-note"><Info size={15} /> Exclusion does not protect against remote control, malicious capture tools, or cameras. File pickers may be visible; open them outside a presentation.</div></>}
+      {activeSection === 'data' && <><div className="settings-heading"><h2>Data</h2><p>Your notes are stored locally and are not encrypted by notiert.</p></div><div className="data-location"><div className="data-folder-icon"><FolderOpen size={18} /></div><div><b>Local storage</b><span>SQLite database · app data folder</span></div><button className="button secondary small" onClick={() => void window.notiert.settings.openFolder()}>Open folder</button></div><div className="data-actions"><div><b>Export notes</b><span>Save plain text or Markdown to a folder you choose.</span></div><div><button className="button secondary small" onClick={() => void window.notiert.data.export({ scope: 'all', format: 'txt' })}>Export TXT</button><button className="button secondary small" onClick={() => void window.notiert.data.export({ scope: 'all', format: 'md' })}>Export Markdown</button></div></div><div className="data-actions"><div><b>SQLite backup</b><span>{settings?.backupWarning ? 'The last backup failed. Notes can still save; try creating a backup again.' : settings?.lastBackupAt ? `Last backup ${formatDateTime(settings.lastBackupAt)}.` : 'No backup has been created yet.'} A full recovery snapshot of notes, tags, tasks, scheduled meetings, and Trash.</span></div><div><button className="button secondary small" onClick={() => void onBackup()}>Create backup</button><button className="button secondary small" onClick={() => void onRestore()}>Restore backup</button></div></div><div className="setting-note"><Info size={15} /> Restoring replaces current data. notiert creates a safety backup first. Independent backups can retain notes removed from Trash. Do not sync the live SQLite database through a shared folder.</div></>}
+      {activeSection === 'about' && <><div className="settings-heading"><h2>About notiert</h2><p>A quiet, local desktop utility for capturing a thought during a meeting.</p></div><div className="about-card"><div className="about-logo">n</div><div><b>notiert</b><span>Version 0.1.0 · Windows 11 x64</span></div></div><div className="setting-row"><div><b>Local diagnostics</b><span>Exports app version, Windows build, shortcut status, and database availability. No note or meeting content.</span></div><button className="button secondary small" onClick={async () => { const result = await window.notiert.data.diagnostics(); if (!result.ok) window.alert(result.message) }}>Export diagnostics</button></div><div className="license-box"><b>Third-party licenses</b><p>Electron · Chromium · React · ReUI · dnd-kit · Geist typefaces · Lucide icons · SQLite · other bundled dependencies.</p><p>See the licenses folder in the installed app for full notices.</p></div></>}
     </section>
-    {firstRun && <div className="modal-backdrop setup-backdrop"><div className="setup-dialog"><div className="setup-brand"><span className="brand-glyph">n</span><span>notable</span><small>FIRST RUN</small></div><h2>Catch a thought.<br />Keep your place.</h2><p>Press a shortcut, type a note, and return to what you were doing. Notes stay on this device.</p><div className="setup-shortcuts"><button className={onboardingShortcut === 'Control+N' ? 'selected' : ''} onClick={() => setOnboardingShortcut('Control+N')}><kbd>Ctrl</kbd><b>+</b><kbd>N</kbd><span>Recommended</span></button><button className={onboardingShortcut === 'Control+Alt+N' ? 'selected' : ''} onClick={() => setOnboardingShortcut('Control+Alt+N')}><kbd>Ctrl</kbd><b>+</b><kbd>Alt</kbd><b>+</b><kbd>N</kbd></button></div><div className="setup-notice"><Shield size={16} /><span>notable asks Windows to hide its windows from supported captures. Meeting apps may still show them; test from another participant's device.</span></div><label className="setup-login"><input type="checkbox" checked={onboardingLogin} onChange={(event) => setOnboardingLogin(event.target.checked)} /> Launch quietly when I sign in</label><div className="dialog-actions"><button className="button secondary" onClick={() => onTrayOnly(onboardingLogin)}>Use tray only</button><button className="button primary" onClick={() => onFinish(onboardingShortcut, onboardingLogin)}>Save and continue <ArrowRight size={15} /></button></div><small className="setup-foot">Ctrl+N replaces the usual New shortcut while notable is running.</small></div></div>}
+    {firstRun && <div className="modal-backdrop setup-backdrop"><div className="setup-dialog"><div className="setup-brand"><span className="brand-glyph">n</span><span>notiert</span><small>FIRST RUN</small></div><h2>Catch a thought.<br />Keep your place.</h2><p>Press a shortcut, type a note, and return to what you were doing. Notes stay on this device.</p><div className="setup-shortcuts"><button className={onboardingShortcut === 'Control+N' ? 'selected' : ''} onClick={() => setOnboardingShortcut('Control+N')}><kbd>Ctrl</kbd><b>+</b><kbd>N</kbd><span>Recommended</span></button><button className={onboardingShortcut === 'Control+Alt+N' ? 'selected' : ''} onClick={() => setOnboardingShortcut('Control+Alt+N')}><kbd>Ctrl</kbd><b>+</b><kbd>Alt</kbd><b>+</b><kbd>N</kbd></button></div><div className="setup-notice"><Shield size={16} /><span>notiert asks Windows to hide its windows from supported captures. Meeting apps may still show them; test from another participant's device.</span></div><label className="setup-login"><input type="checkbox" checked={onboardingLogin} onChange={(event) => setOnboardingLogin(event.target.checked)} /> Launch quietly when I sign in</label><div className="dialog-actions"><button className="button secondary" onClick={() => onTrayOnly(onboardingLogin)}>Use tray only</button><button className="button primary" onClick={() => onFinish(onboardingShortcut, onboardingLogin)}>Save and continue <ArrowRight size={15} /></button></div><small className="setup-foot">Ctrl+N replaces the usual New shortcut while notiert is running.</small></div></div>}
   </div>
 }
 

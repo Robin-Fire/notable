@@ -1,10 +1,10 @@
 $ErrorActionPreference = 'Stop'
 $workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$executable = Join-Path $workspaceRoot 'release\win-unpacked\notable.exe'
+$executable = Join-Path $workspaceRoot 'release\win-unpacked\notiert.exe'
 if (-not (Test-Path -LiteralPath $executable)) { throw 'Build the unpacked Windows app before running this smoke test.' }
 
 $tempParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
-$smokeRoot = Join-Path $tempParent ('notable-smoke-' + [guid]::NewGuid().ToString('N'))
+$smokeRoot = Join-Path $tempParent ('notiert-smoke-' + [guid]::NewGuid().ToString('N'))
 $profilePath = Join-Path $smokeRoot 'profile'
 $logPath = Join-Path $smokeRoot 'electron.log'
 $stdoutPath = Join-Path $smokeRoot 'stdout.log'
@@ -26,5 +26,8 @@ try {
   if ($process) { $process.Refresh(); if (-not $process.HasExited) { & taskkill.exe /T /F /PID $process.Id | Out-Null } }
   $resolvedSmokeRoot = [IO.Path]::GetFullPath($smokeRoot)
   if (-not $resolvedSmokeRoot.StartsWith($tempParent, [StringComparison]::OrdinalIgnoreCase)) { throw 'Temporary smoke path escaped the system temp folder.' }
-  Remove-Item -LiteralPath $resolvedSmokeRoot -Recurse -Force
+  for ($attempt = 0; $attempt -lt 10; $attempt++) {
+    try { Remove-Item -LiteralPath $resolvedSmokeRoot -Recurse -Force; break }
+    catch { if ($attempt -eq 9) { throw }; Start-Sleep -Milliseconds 250 }
+  }
 }

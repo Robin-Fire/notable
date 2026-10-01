@@ -1,9 +1,9 @@
-appId: com.notable.desktop
-productName: notable
+appId: com.notiert.desktop
+productName: notiert
 publish:
   provider: github
   owner: Robin-Fire
-  repo: notable
+  repo: notiert
   releaseType: release
 directories:
   buildResources: resources
@@ -18,18 +18,20 @@ asar: true
 asarUnpack:
   - "**/*.node"
 win:
-  icon: resources/notable.ico
+  icon: resources/notiert.ico
   target:
     - target: nsis
       arch: [x64]
-  executableName: notable
-  artifactName: notable-${version}-win-${arch}.${ext}
+  executableName: notiert
+  artifactName: notiert-${version}-win-${arch}.${ext}
 nsis:
+  # Preserve the installed app identity so existing installations upgrade in place.
+  guid: 4d9475c5-9ea9-5670-a918-31058aa9c876
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: false
   createDesktopShortcut: false
   createStartMenuShortcut: true
-  shortcutName: notable
+  shortcutName: notiert
   deleteAppDataOnUninstall: false
   runAfterFinish: true

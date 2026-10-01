@@ -66,7 +66,7 @@ export type PlannerBacklogPage = { items: PlannerTask[]; nextCursor: { priorityP
 export type Category = { id: string; name: string }
 export type TagRecord = { id: string; name: string; categoryId: string | null; color: string; count: number }
 
-export type NotableApi = {
+export type NotiertApi = {
   updates: {
     getStatus(): Promise<ApiResult<{ status: 'idle' | 'checking' | 'available' | 'downloaded' | 'error'; version?: string; message?: string }>>
     check(): Promise<ApiResult<void>>
