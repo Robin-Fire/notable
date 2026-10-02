@@ -18,6 +18,7 @@ export function Capture() {
   const imagePendingRef = useRef(false)
   const requestIdRef = useRef<string | null>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
   const revision = useRef(0)
   const generation = useRef(0)
   const categoryId = useRef<string | null>(null)
@@ -65,8 +66,18 @@ export function Capture() {
     input.style.height = 'auto'
     const contentHeight = Math.min(input.scrollHeight, 132)
     input.style.height = `${contentHeight}px`
-    resizeCapture(Math.min(320, Math.max(88, contentHeight + (categories.length ? 89 : 62)+(state.categoryId?27:0) + (state.tags?.length?25:0)+(state.images.length ? 67 : 0) + (error || tooLong || !state.available ? 28 : 0))))
-  }, [body, categories.length, error, tooLong, state.available, state.images.length, state.categoryId, state.tags, resizeCapture])
+  }, [body])
+
+  useLayoutEffect(() => {
+    const content = contentRef.current
+    if (!content) return
+    // Measure the actual layout, including wrapped tags and storage messages.
+    const updateHeight = () => resizeCapture(Math.min(320, Math.max(88, Math.ceil(content.getBoundingClientRect().height) + 17)))
+    const observer = new ResizeObserver(updateHeight)
+    observer.observe(content)
+    updateHeight()
+    return () => observer.disconnect()
+  }, [resizeCapture])
 
   const persistDraft = useCallback(async (draft: string, selectedCategory = categoryId.current) => {
     if (!state.available || saving) return
@@ -134,7 +145,6 @@ export function Capture() {
       categoryId.current = null;subcategoryId.current=null;captureTags.current=[]
       setState((current) => ({ ...current, categoryId: null,subcategoryId:null,tags:[] }))
       try { await window.notiert.capture.dismiss('saved') } catch { /* The capture is already saved. */ }
-      resizeCapture(categories.length ? 115 : 88)
     } catch { setError('The capture could not be saved. Your text and images are still here. Try again.') }
     finally { savingLock.current = false; setSaving(false) }
   }
@@ -198,10 +208,12 @@ export function Capture() {
   const copyText = async () => { await navigator.clipboard.writeText(body); setError('Text copied. It is still here until you close this bar.') }
   return <main className="capture-shell" aria-label="Capture a thought">
     <div className="capture-card">
+      <div className="capture-content" ref={contentRef}>
       <header className="capture-header">
         <span className="wordmark">notiert</span>
+        <span className="capture-heading">Quick capture</span>
         <button className="icon-button capture-open" title="Open notes" aria-label="Open notes" onClick={() => window.notiert.windows.openNotes()}><ArrowUpRight size={15} /></button>
-        <button className="icon-button capture-close" title="Close capture" aria-label="Close capture" onClick={() => void flushDraft().finally(() => window.notiert.capture.dismiss('escape'))}><X size={15} /></button>
+        <button className="icon-button capture-close" title="Close capture (Esc)" aria-label="Close capture" onClick={() => void flushDraft().finally(() => window.notiert.capture.dismiss('escape'))}><X size={15} /></button>
       </header>
       <textarea
         ref={inputRef} className="capture-input" rows={1} value={body} maxLength={100000}
@@ -229,9 +241,11 @@ export function Capture() {
         {(error || !state.available) && <div className="capture-alert-actions">{error && <button onClick={() => void submit()} disabled={saving}><RotateCcw size={13} /> Retry</button>}<button onClick={() => void copyText()}><Copy size={13} /> Copy</button></div>}
       </div>}
       {state.available && !error && <footer className="capture-footer">
+        <span className="capture-hint"><kbd>Shift ↵</kbd> new line <span className="capture-hint-divider">·</span> <kbd>Esc</kbd> close</span>
         {[...body].length > 47_500 && <span className="capture-count near-limit">{[...body].length.toLocaleString()} / 50,000</span>}
-        <button className="capture-submit" onClick={() => void submit()} disabled={(!body.trim() && !state.images.length) || saving || imagePending || !state.available} aria-label="Save to Inbox"><CornerDownLeft size={15} /></button>
+        <button className="capture-submit" title="Save to Inbox (Enter)" onClick={() => void submit()} disabled={(!body.trim() && !state.images.length) || saving || imagePending || !state.available} aria-label="Save to Inbox"><span>{saving ? 'Saving…' : imagePending ? 'Pasting…' : 'Save'}</span><CornerDownLeft size={13} /></button>
       </footer>}
+      </div>
     </div>
   </main>
 }

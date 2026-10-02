@@ -1,5 +1,12 @@
 # Release notes
 
+## 0.1.8 — 2026-10-02
+
+- Use the same edit modal for Inbox, All Items, category, tag, backlog, and calendar items.
+- Show attached image previews automatically in the editor and keep Inbox tag drafts when editing.
+- Improve category and tag dialogs, collapse indicators, and visibility of empty backlog groups and subcategory filters.
+- Refine the capture bar layout and measure its height from its content.
+
 ## 0.1.1 â€” 2026-09-25
 
 - Removed keyboard hints and the shadow from the capture bar.

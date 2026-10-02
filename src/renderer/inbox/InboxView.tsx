@@ -1,3 +1,4 @@
+import { ItemDetailDialog } from '../components/ItemDetailDialog'
 import { CategoryPicker } from '../components/CategoryPicker'
 import { ImageIndicator } from '../components/ItemImages'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -10,7 +11,9 @@ function dateLabel(timestamp: number) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp)
 }
 
-export function InboxView({ onOpen }: { onOpen: (id: string) => void }) {
+export function InboxView() {
+  const [editTags, setEditTags] = useState<string[]>([])
+  const [editItem, setEditItem] = useState<Note | null>(null)
   const [items, setItems] = useState<Note[]>([])
   const [total, setTotal] = useState(0)
   const [nextCursor, setNextCursor] = useState<InboxPage['nextCursor']>(null)
@@ -70,9 +73,10 @@ export function InboxView({ onOpen }: { onOpen: (id: string) => void }) {
   }
 
   return <section className="inbox-page">
+    {editItem && <ItemDetailDialog key={editItem.id} task={editItem} initialTags={editTags} suggestions={suggestions} onClose={() => setEditItem(null)} onChanged={() => { try { localStorage.removeItem(`inbox-tags:${editItem.id}`) } catch {} setEditItem(null); void load() }} />}
     <header className="planner-page-heading"><div><span className="eyebrow">CAPTURE FIRST · SORT WHEN READY</span><h1>Inbox <span className="title-count">{total}</span></h1><p>Every thought lands here. Add tags, then file it as a note or a task.</p></div></header>
     {error && <div className="inline-error" role="alert"><Info size={15} /><span>{error}</span><button onClick={() => void load()}>Retry</button></div>}
-    {(!taxonomyReady||loading && !items.length) ? <div className="loading-state"><span className="spinner" /> Loading inbox…</div> : !items.length ? <div className="inbox-empty"><div className="empty-mark"><Archive size={19} /></div><h2>Nothing waiting.</h2><p>New captures appear here, ready for a quick sort.</p></div> : <><div className="inbox-list">{items.map((item) => <InboxCard key={item.id} item={item} onFile={file} onCategoryChange={setCategory} onOpen={onOpen} busy={pendingId !== null} suggestions={suggestions} categories={categories} subcategories={subcategories} tagRecords={tagRecords} />)}</div>{nextCursor && <button className="load-more" onClick={() => void load(nextCursor, true)} disabled={loading}>Load older Inbox items</button>}</>}
+    {(!taxonomyReady||loading && !items.length) ? <div className="loading-state"><span className="spinner" /> Loading inbox…</div> : !items.length ? <div className="inbox-empty"><div className="empty-mark"><Archive size={19} /></div><h2>Nothing waiting.</h2><p>New captures appear here, ready for a quick sort.</p></div> : <><div className="inbox-list">{items.map((item) => <InboxCard key={`${item.id}:${item.revision}`} item={item} onFile={file} onCategoryChange={setCategory} onOpen={(id, tags) => { setEditTags(tags); setEditItem(items.find(item => item.id === id) ?? null) }} busy={pendingId !== null} suggestions={suggestions} categories={categories} subcategories={subcategories} tagRecords={tagRecords} />)}</div>{nextCursor && <button className="load-more" onClick={() => void load(nextCursor, true)} disabled={loading}>Load older Inbox items</button>}</>}
   </section>
 }
 
@@ -87,7 +91,7 @@ function readTagDraft(item: Note): { tags: string[]; draft: string; categoryId: 
   return { tags: item.tags, draft: '', categoryId: item.categoryId, subcategoryId:item.subcategoryId??null }
 }
 
-function InboxCard({ item, onFile, onCategoryChange, onOpen, busy, suggestions, categories, subcategories }: { item: Note; onFile: (item: Note, kind: 'note' | 'task', tags: string[], categoryId: string | null, subcategoryId: string | null) => void; onCategoryChange: (id: string, categoryId: string | null, subcategoryId: string | null) => Promise<boolean>; onOpen: (id: string) => void; busy: boolean; suggestions: string[]; categories: Category[]; subcategories: Subcategory[]; tagRecords: TagRecord[] }) {
+function InboxCard({ item, onFile, onCategoryChange, onOpen, busy, suggestions, categories, subcategories }: { item: Note; onFile: (item: Note, kind: 'note' | 'task', tags: string[], categoryId: string | null, subcategoryId: string | null) => void; onCategoryChange: (id: string, categoryId: string | null, subcategoryId: string | null) => Promise<boolean>; onOpen: (id: string, tags: string[]) => void; busy: boolean; suggestions: string[]; categories: Category[]; subcategories: Subcategory[]; tagRecords: TagRecord[] }) {
   const stateRef = useRef<{ tags: string[]; draft: string; categoryId: string | null; subcategoryId?: string | null } | null>(null)
   if (!stateRef.current) {
     const stored=readTagDraft(item)
@@ -117,7 +121,7 @@ function InboxCard({ item, onFile, onCategoryChange, onOpen, busy, suggestions, 
   const changeTags = (next: string[]) => { stateRef.current = { ...stateRef.current!, tags: next }; setTags(next); persist(stateRef.current) }
   const changeDraft = (next: string) => { stateRef.current = { ...stateRef.current!, draft: next }; setDraft(next); persist(stateRef.current) }
   return <article className="inbox-card">
-    <button className="inbox-card-body" disabled={busy} onClick={() => onOpen(item.id)} aria-label="Open and edit this captured item">
+    <button className="inbox-card-body" disabled={busy} onClick={() => onOpen(item.id, collectTags(tags, draft))} aria-label="Open and edit this captured item">
       <span className="inbox-card-text">{item.body.trim() || (item.images.length ? 'Image capture' : 'Empty capture')}</span>
       <span className="inbox-card-time">{dateLabel(item.createdAt)} <ImageIndicator count={item.images.length} /></span>
     </button>

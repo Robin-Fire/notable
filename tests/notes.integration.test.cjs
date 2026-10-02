@@ -121,19 +121,20 @@ test('a category task appears in Backlog, moves to Later, and returns at the top
   const app = render(React.createElement(NotesApp))
   try {
     fireEvent.click(screen.getByRole('button', { name: 'Backlog', exact: true }))
-    const group = within(await screen.findByRole('region', { name: 'Work backlog' }))
+    let group = within(await screen.findByRole('region', { name: 'Work backlog' }))
     fireEvent.click(group.getByRole('button', { name: 'Add task to Work' }))
     const dialog = within(await screen.findByRole('dialog', { name: 'Add a to-do' }))
     fireEvent.change(dialog.getByLabelText('Task'), { target: { value: 'Category task round trip' } })
     fireEvent.click(dialog.getByRole('button', { name: 'Add to Backlog' }))
+    group = within(await screen.findByRole('region', { name: 'Work backlog' }))
     await group.findByRole('button', { name: 'Category task round trip' })
     fireEvent.click(group.getByRole('button', { name: 'Later', exact: true }))
-    await waitFor(() => assert.ok(!group.queryByRole('button', { name: 'Category task round trip' })))
+    await waitFor(() => assert.ok(!screen.queryByRole('button', { name: 'Category task round trip' })))
     fireEvent.click(within(document.querySelector('.sidebar')).getByRole('button', { name: 'Later', exact: true }))
     const later = within(await screen.findByRole('region', { name: 'Work backlog' }))
     await later.findByRole('button', { name: 'Category task round trip' })
     fireEvent.click(later.getByRole('button', { name: 'Return to Backlog' }))
-    await waitFor(() => assert.ok(!later.queryByRole('button', { name: 'Category task round trip' })))
+    await waitFor(() => assert.ok(!screen.queryByRole('button', { name: 'Category task round trip' })))
     fireEvent.click(screen.getByRole('button', { name: 'Backlog', exact: true }))
     await within(await screen.findByRole('region', { name: 'Work backlog' })).findByRole('button', { name: 'Category task round trip' })
   } finally { app.unmount() }
@@ -211,7 +212,9 @@ test('Backlog groups tasks by category and sends a task to Ready', async () => {
   const projectId = '77777777-7777-4777-8777-777777777777'
   const backlogTask = { ...makeNote(noteId, 'Prepare review', 'task', projectId), plannedDate: null, beforeEventId: null, position: 0, priorityPosition: 0, ready: false }
   let readyInput
-  app.api.planner.backlog = async () => ({ ok: true, value: { items: [backlogTask], nextCursor: null, total: 1, tagNames: ['Planning', 'Other category tag'] } })
+  backlogTask.subcategoryId = '88888888-8888-4888-8888-888888888888'
+  const unassignedTask = { ...backlogTask, id: captureId, body: 'Unsorted review', subcategoryId: null }
+  app.api.planner.backlog = async ({ categoryId }) => ({ ok: true, value: { items: categoryId === projectId ? [backlogTask, unassignedTask] : [], nextCursor: null, total: categoryId === projectId ? 2 : 0, tagNames: ['Planning', 'Other category tag'], subcategoryCounts: categoryId === projectId ? { [backlogTask.subcategoryId]: 1, '': 1 } : {} } })
   app.api.planner.setReady = async (input) => { readyInput = input; return { ok: true, value: undefined } }
   app.api.notes.taxonomy = async () => ({ ok: true, value: { categories: [{ id: projectId, name: 'Client A' }, { id: '99999999-9999-4999-8999-999999999999', name: 'Client B' }], subcategories:[{id:'88888888-8888-4888-8888-888888888888',name:'Planning',categoryId:projectId,color:'#85858e',count:1}], tags: [{ id: '88888888-8888-4888-8888-888888888888', name: 'Planning', categoryId: projectId, color: '#85858e', count: 1 }] } })
   try {
@@ -224,7 +227,7 @@ test('Backlog groups tasks by category and sends a task to Ready', async () => {
     fireEvent.click(categoryGroup.getByRole('button', { name: 'Planning', pressed: true }))
     fireEvent.click(await categoryGroup.findByRole('button', { name: 'Select all' }))
     assert.equal(categoryGroup.getByRole('button', { name: 'Planning', pressed: true }).getAttribute('aria-pressed'), 'true')
-    fireEvent.click(await categoryGroup.findByRole('button', { name: 'Add to Ready' }))
+    fireEvent.click((await categoryGroup.findAllByRole('button', { name: 'Add to Ready' }))[0])
     await waitFor(() => assert.deepEqual(readyInput, { id: noteId }))
   } finally { app.unmount() }
 })
@@ -303,33 +306,37 @@ test('sidebar category and tag deletion requires confirmation and returns to a v
   } finally { window.confirm = originalConfirm; app.unmount() }
 })
 
-test('opening an Inbox capture keeps its detail editor selected while the note list changes', async () => {
+test('opening an Inbox capture opens the shared editor without leaving Inbox', async () => {
   const app = setup()
   try {
     fireEvent.click(within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('button', { name: /^Inbox/ }))
     fireEvent.click(await screen.findByRole('button', { name: 'Open and edit this captured item' }))
-    await waitFor(() => assert.ok(screen.getByRole('region', { name: 'Note details' })))
-    assert.match(screen.getByRole('region', { name: 'Note details' }).textContent, /Captured thought/)
+    await screen.findByRole('dialog', { name: 'Edit inbox item' })
+    assert.equal(screen.getByRole('textbox', { name: 'Edit item' }).value, 'Captured thought')
+    assert.ok(screen.getByRole('dialog', { name: 'Edit inbox item' }))
+    assert.ok(screen.getByRole('heading', { name: /Inbox/ }))
   } finally { app.unmount() }
 })
 
-test('dirty edits offer Stay, Discard, and Save before sidebar navigation', async () => {
+test('shared modal protects dirty edits on Close and Escape before navigation', async () => {
   const app = setup()
+  const originalConfirm = window.confirm
   try {
     fireEvent.click(await screen.findByRole('button', { name: /Open note Existing note/ }))
     fireEvent.click(await screen.findByRole('button', { name: 'Edit item' }))
     const editor = screen.getByRole('textbox', { name: 'Edit item' })
     fireEvent.change(editor, { target: { value: 'Unsaved wording' } })
+    window.confirm = () => false
+    fireEvent.click(screen.getByRole('button', { name: 'Close', exact: true }))
+    assert.equal(editor.value, 'Unsaved wording')
+    fireEvent.keyDown(editor, { key: 'Escape' })
+    assert.ok(screen.getByRole('dialog', { name: 'Edit note' }))
+    window.confirm = () => true
+    fireEvent.keyDown(editor, { key: 'Escape' })
+    assert.equal(screen.queryByRole('dialog'), null)
     fireEvent.click(within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('button', { name: /^Inbox/ }))
-    const prompt = await screen.findByRole('dialog', { name: 'Unsaved changes' })
-    fireEvent.click(screen.getByRole('button', { name: 'Stay' }))
-    assert.ok(screen.getByRole('textbox', { name: 'Edit item' }))
-    fireEvent.click(within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('button', { name: /^Inbox/ }))
-    await screen.findByRole('dialog', { name: 'Unsaved changes' })
-    fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
-    await waitFor(() => assert.ok(screen.getByRole('heading', { name: /Inbox/ })))
-    assert.equal(prompt.isConnected, false)
-  } finally { app.unmount() }
+    await screen.findByRole('heading', { name: /Inbox/ })
+  } finally { window.confirm = originalConfirm; app.unmount() }
 })
 
 test('global note shortcuts do not intercept Enter in Inbox or Calenban controls', async () => {
@@ -561,6 +568,7 @@ test('meeting editor submits weekly recurrence and removed sidebar and calendar 
 
 
 test('screenshots paste into note edits, discard safely, and save with text', async () => {
+  const originalConfirm = window.confirm
   global.FileReader = dom.window.FileReader
   const app = setup()
   let saved
@@ -573,8 +581,8 @@ test('screenshots paste into note edits, discard safely, and save with text', as
     paste()
     await screen.findByRole('button', { name: 'Remove image 1' })
     assert.equal(screen.getByRole('button', { name: /Images/ }).getAttribute('aria-expanded'), 'true')
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel', exact: true }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Discard', exact: true }))
+    window.confirm = () => true
+    fireEvent.click(screen.getByRole('button', { name: 'Close', exact: true }))
     assert.equal(saved, undefined)
     assert.equal(screen.queryByRole('button', { name: /Images/ }), null)
     fireEvent.click(screen.getByRole('button', { name: 'Edit item' }))
@@ -585,7 +593,7 @@ test('screenshots paste into note edits, discard safely, and save with text', as
     await waitFor(() => assert.equal(saved?.images.length, 1))
     assert.equal(saved.body, 'Screenshot context')
     assert.ok(saved.images[0].dataUrl.startsWith('data:image/png;base64,'))
-  } finally { app.unmount(); delete global.FileReader }
+  } finally { window.confirm = originalConfirm; app.unmount(); delete global.FileReader }
 })
 
 
@@ -599,7 +607,7 @@ test('subcategory navigation filters by ID and editor category changes preserve 
     await waitFor(()=>assert.ok(filters.some(filter=>filter.subcategoryId===subcategoryId&&filter.categoryId===categoryId)))
     fireEvent.click(await screen.findByRole('button',{name:/Open note Organized note/}))
     fireEvent.click(await screen.findByRole('button',{name:'Edit item'}))
-    assert.equal(screen.getByRole('combobox',{name:'Item subcategory'}).value,subcategoryId)
+    await waitFor(() => assert.equal(screen.getByRole('combobox',{name:'Item subcategory'}).value,subcategoryId))
     fireEvent.change(screen.getByRole('combobox',{name:'Item category'}),{target:{value:otherCategory}})
     assert.equal(screen.getByRole('combobox',{name:'Item subcategory'}).value,'')
     fireEvent.click(screen.getByRole('button',{name:'Save',exact:true}))
@@ -717,4 +725,32 @@ test('Backlog and Later tag popovers search, filter and clear independently of s
       await group.findByRole('button',{name:`Other ${page.toLowerCase()}`})
     }
   }finally{app.unmount()}
+})
+
+test('Inbox modal shows existing images, keeps tag drafts, and saves without leaving Inbox', async () => {
+  const app = setup()
+  const capture = { ...makeNote(captureId, 'Captured thought', 'inbox'), images: [{ id: noteId, mimeType: 'image/png' }] }
+  let saved
+  app.api.planner.inbox = async () => ({ ok: true, value: { items: [capture], nextCursor: null, total: 1 } })
+  app.api.notes.image = async () => ({ ok: true, value: 'data:image/png;base64,aGVsbG8=' })
+  app.api.notes.updateItem = async input => { saved = input; return { ok: true, value: { ...capture, ...input, revision: 2 } } }
+  try {
+    app.changeView('inbox')
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit tags' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Add a tag' }), { target: { value: 'Draft tag' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Close tags' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open and edit this captured item' }))
+    const dialog = within(await screen.findByRole('dialog', { name: 'Edit inbox item' }))
+    assert.equal(dialog.getByRole('button', { name: /Images/ }).getAttribute('aria-expanded'), 'true')
+    await dialog.findByRole('img', { name: 'Attached image 1' })
+    fireEvent.change(dialog.getByRole('textbox', { name: 'Edit item' }), { target: { value: 'Edited capture' } })
+    fireEvent.click(dialog.getByRole('button', { name: 'Save', exact: true }))
+    await waitFor(() => assert.equal(saved?.body, 'Edited capture'))
+    assert.equal(screen.queryByRole('dialog'), null)
+    assert.equal(saved.body, 'Edited capture')
+    assert.deepEqual(saved.tags, ['Draft tag'])
+    assert.equal(saved.images[0].id, noteId)
+    assert.ok(screen.getByRole('heading', { name: /Inbox/ }))
+    assert.equal(localStorage.getItem(`inbox-tags:${captureId}`), null)
+  } finally { app.unmount() }
 })

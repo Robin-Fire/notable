@@ -73,6 +73,7 @@ function BacklogCategoryGroup({ group, categories, query, onCount, onOpenTask, o
   const [selected, setSelected] = useState<Record<string, boolean>>({})
   const [includeUntagged, setIncludeUntagged] = useState(true)
   const [tagFilter,setTagFilter]=useState('')
+  const [subcategoryCounts, setSubcategoryCounts] = useState<Record<string, number>>({})
   const [collapsed, setCollapsed] = useState(false)
   const [tasks, setTasks] = useState<PlannerTask[]>([])
   const [cursor, setCursor] = useState<PlannerBacklogPage['nextCursor']>(null)
@@ -94,7 +95,7 @@ function BacklogCategoryGroup({ group, categories, query, onCount, onOpenTask, o
     try {
       const page = valueOf(await window.notiert.planner.backlog({ categoryId: group.categoryId, query, ...selectionFilter, limit: pageSize, later: laterOnly }))
       if (request !== requestId.current) return
-      setTasks(page.items); setCursor(page.nextCursor); setTotal(page.total); onCount(group.id, page.total); setError(''); setLoaded(true)
+      setSubcategoryCounts(page.subcategoryCounts); setTasks(page.items); setCursor(page.nextCursor); setTotal(page.total); onCount(group.id, page.total); setError(''); setLoaded(true)
     } catch (reason) {
       if (request === requestId.current) setError(reason instanceof Error ? reason.message : 'This category could not be loaded.')
     } finally { if (request === requestId.current) setLoading(false) }
@@ -146,12 +147,14 @@ function BacklogCategoryGroup({ group, categories, query, onCount, onOpenTask, o
   }
 
   const canShowTasks = selectedTags.length > 0 || includeUntagged
+  if (loaded && !error && Object.values(subcategoryCounts).every(count => count === 0)) return null
+
   return <section className="backlog-group" aria-label={`${group.name} backlog`}>
     <div className="backlog-group-heading"><button type="button" className="backlog-group-toggle" aria-expanded={!collapsed} onClick={() => setCollapsed((current) => !current)}><FolderKanban size={16} /><b>{group.name}</b><span>{total}</span><ChevronDown size={15} className={collapsed ? 'is-closed' : ''} /></button>{!laterOnly && <button type="button" className="backlog-category-add" aria-label={`Add task to ${group.name}`} title={`Add task to ${group.name}`} onClick={() => { setSelected({}); setIncludeUntagged(true); setCollapsed(false); onAddTask(group.categoryId) }}><Plus size={15} /></button>}</div>
     {!collapsed && <>
       <div className="backlog-group-filters"><div className="backlog-category-filters" aria-label={`Filter ${group.name} by subcategory`}>
-        {tagOptions.map((tag) => <button key={tag.id} type="button" className={`filter-pill ${selected[tag.id] !== false ? 'is-selected' : ''}`} aria-pressed={selected[tag.id] !== false} onClick={() => toggleTag(tag.id)}><FolderKanban size={11} style={{ color: tag.color }} />{tag.name}</button>)}
-        <button type="button" className={`filter-pill ${includeUntagged ? 'is-selected' : ''}`} aria-pressed={includeUntagged} onClick={() => setIncludeUntagged((value) => !value)}>No subcategory</button>
+        {tagOptions.filter(tag => (subcategoryCounts[tag.id] ?? 0) > 0).map((tag) => <button key={tag.id} type="button" className={`filter-pill ${selected[tag.id] !== false ? 'is-selected' : ''}`} aria-pressed={selected[tag.id] !== false} onClick={() => toggleTag(tag.id)}><FolderKanban size={11} style={{ color: tag.color }} />{tag.name}</button>)}
+        {(subcategoryCounts[''] ?? 0) > 0 && <button type="button" className={`filter-pill ${includeUntagged ? 'is-selected' : ''}`} aria-pressed={includeUntagged} onClick={() => setIncludeUntagged((value) => !value)}>No subcategory</button>}
         {!everyTagSelected && <button type="button" className="filter-clear" onClick={selectAll}>Select all</button>}
       </div>
       <TagFilter category={group.name} tags={group.allTags} value={tagFilter} onChange={setTagFilter} /></div>

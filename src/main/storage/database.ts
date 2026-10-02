@@ -428,7 +428,7 @@ export class Store {
   }
 
   taxonomy(): { categories: Category[]; subcategories: Subcategory[]; tags: TagRecord[] } {
-    const categories = this.db.prepare('SELECT id,name FROM categories ORDER BY position,name COLLATE NOCASE').all() as Category[]
+    const categories = this.db.prepare('SELECT c.id,c.name,(SELECT count(*) FROM notes n WHERE n.project_id=c.id AND n.subcategory_id IS NULL AND n.deleted_at IS NULL) AS noSubcategoryCount FROM categories c ORDER BY c.position,c.name COLLATE NOCASE').all() as Category[]
     const rows = this.db.prepare(`SELECT t.id,t.name,NULL AS categoryId,t.color,count(n.id) AS count
       FROM item_tags t LEFT JOIN note_tags nt ON nt.tag_id=t.id LEFT JOIN notes n ON n.id=nt.note_id AND n.deleted_at IS NULL
       GROUP BY t.id ORDER BY t.position,t.name COLLATE NOCASE`).all() as TagRecord[]
@@ -560,7 +560,7 @@ export class Store {
 
   getNote(id: string) {
     const row = this.db.prepare(`SELECT ${NOTE_PROJECTION} ${NOTE_FROM} WHERE n.id=?`).get(id) as NoteRow | undefined
-    return row ? noteFrom(row) : null
+    return row ? row.kind === 'task' ? taskFrom(row) : noteFrom(row) : null
   }
 
   listInbox(cursor?: { sortAt: number; id: string }, limit = 50): { items: (Note & { meetingTitle: string | null })[]; nextCursor: { sortAt: number; id: string } | null; total: number } {
@@ -629,13 +629,14 @@ export class Store {
     return (this.db.prepare("SELECT coalesce(max(backlog_position),-1)+1 AS position FROM notes WHERE kind='task' AND task_status='open' AND deleted_at IS NULL AND is_later=0 AND task_ready=0 AND planned_date IS NULL AND project_id IS ?").get(categoryId) as { position: number }).position
   }
 
-  listBacklog(input: { categoryId: string | null; query?: string; subcategoryIds?: string[]; includeNoSubcategory?: boolean; tagNames?: string[]; includeUntagged?: boolean; cursor?: { priorityPosition: number; id: string }; limit?: number; later?: boolean } = { categoryId: null }): { items: PlannerTask[]; nextCursor: { priorityPosition: number; id: string } | null; total: number; tagNames: string[] } {
+  listBacklog(input: { categoryId: string | null; query?: string; subcategoryIds?: string[]; includeNoSubcategory?: boolean; tagNames?: string[]; includeUntagged?: boolean; cursor?: { priorityPosition: number; id: string }; limit?: number; later?: boolean } = { categoryId: null }): { items: PlannerTask[]; nextCursor: { priorityPosition: number; id: string } | null; total: number; tagNames: string[]; subcategoryCounts: Record<string, number> } {
     const limit = input.limit ?? 50
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new AppError('INVALID_INPUT', 'Choose a valid backlog page size.')
     const query = input.query?.trim() ?? ''
     const where = ["n.deleted_at IS NULL", "n.kind='task'", "n.task_status='open'", 'n.task_ready=0', 'n.planned_date IS NULL', 'n.is_later=?', 'n.project_id IS ?']
     const params: (string | number | null)[] = []
     params.push(input.later ? 1 : 0, input.categoryId)
+    const subcategoryCounts = Object.fromEntries((this.db.prepare(`SELECT coalesce(n.subcategory_id,'') AS id,count(*) AS count FROM notes n WHERE ${where.join(' AND ')} GROUP BY n.subcategory_id`).all(...params) as { id: string; count: number }[]).map(row => [row.id, row.count]))
     if (input.subcategoryIds!==undefined || input.includeNoSubcategory!==undefined) {
       const selected=input.subcategoryIds??[], clauses:string[]=[]
       if (selected.length) { clauses.push(`n.subcategory_id IN (${selected.map(()=>'?').join(',')})`); params.push(...selected) }
@@ -671,7 +672,7 @@ export class Store {
     const hasMore = rows.length > limit
     const items = rows.slice(0, limit)
     const last = items.at(-1)
-    return { items: items.map(taskFrom), nextCursor: hasMore && last ? { priorityPosition: last.backlog_position, id: last.id } : null, total, tagNames: availableTags }
+    return { items: items.map(taskFrom), nextCursor: hasMore && last ? { priorityPosition: last.backlog_position, id: last.id } : null, total, tagNames: availableTags, subcategoryCounts }
   }
 
   setTaskReady(id: string) {

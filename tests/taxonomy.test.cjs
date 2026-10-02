@@ -190,3 +190,26 @@ test('capture context preserves independent tags and never replaces a nonempty d
     assert.equal(f.store.prepareCaptureContext(category.id,sub.id),null)
   }finally{f.close()}
 })
+
+
+test('backlog subcategory counts cover all pages and stay separate from Later and filters', () => {
+  const f=fixture()
+  try {
+    const category=f.store.createCategory('Work'), empty=f.store.createCategory('Empty')
+    const sub=f.store.createSubcategory('Project',category.id), unused=f.store.createSubcategory('Unused',category.id)
+    const a=create(f.store,'First',category.id,[],'task'), b=create(f.store,'Second',category.id,[],'task')
+    const later=create(f.store,'Later',category.id,[],'task')
+    f.store.setItemCategory(a,category.id,sub.id)
+    f.store.setItemCategory(later,category.id,sub.id)
+    f.store.schedulePlannerTask({id:later,expectedRevision:f.store.getNote(later).revision,placement:{kind:'later'}})
+    const page=f.store.listBacklog({categoryId:category.id,limit:1})
+    assert.equal(page.items.length,1)
+    assert.deepEqual(page.subcategoryCounts,{[sub.id]:1,'':1})
+    assert.equal(page.subcategoryCounts[unused.id],undefined)
+    assert.deepEqual(f.store.listBacklog({categoryId:category.id,query:'no match',subcategoryIds:[],includeNoSubcategory:false}).subcategoryCounts,page.subcategoryCounts)
+    assert.deepEqual(f.store.listBacklog({categoryId:category.id,later:true}).subcategoryCounts,{[sub.id]:1})
+    assert.deepEqual(f.store.listBacklog({categoryId:empty.id}).subcategoryCounts,{})
+    f.store.setTaskCompleted(b,true)
+    assert.deepEqual(f.store.listBacklog({categoryId:category.id}).subcategoryCounts,{[sub.id]:1})
+  } finally { f.close() }
+})

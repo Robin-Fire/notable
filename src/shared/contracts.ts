@@ -95,8 +95,8 @@ export type CaptureState = { body: string; images: CaptureImage[]; generation: n
 export type ApiResult<T> = { ok: true; value: T } | { ok: false; code: string; message: string }
 export type NotePage = { items: (Note & { meetingTitle: string | null })[]; nextCursor: { sortAt: number; id: string; priorityPosition?: number; kindRank?: number } | null; total: number }
 export type InboxPage = { items: (Note & { meetingTitle: string | null })[]; nextCursor: { sortAt: number; id: string } | null; total: number }
-export type PlannerBacklogPage = { items: PlannerTask[]; nextCursor: { priorityPosition: number; id: string } | null; total: number; tagNames: string[] }
-export type Category = { id: string; name: string }
+export type PlannerBacklogPage = { items: PlannerTask[]; nextCursor: { priorityPosition: number; id: string } | null; total: number; tagNames: string[]; subcategoryCounts: Record<string, number> }
+export type Category = { id: string; name: string; noSubcategoryCount?: number }
 export type Subcategory = { id: string; name: string; categoryId: string; color: string; count: number }
 export type MigrationReview = { noteId: string; reason: string; candidates: string[] }
 export type TagRecord = { id: string; name: string; categoryId: string | null; color: string; count: number }
@@ -144,7 +144,7 @@ export type NotiertApi = {
     createTag(input: { name: string; categoryId?: string | null }): Promise<ApiResult<TagRecord>>
     updateTag(input: z.infer<typeof TagUpdateSchema>): Promise<ApiResult<void>>
     deleteTag(id: string): Promise<ApiResult<void>>
-    get(id: string): Promise<ApiResult<(Note & { meetingTitle: string | null }) | null>>
+    get(id: string): Promise<ApiResult<(Note & { meetingTitle: string | null }) | PlannerTask | null>>
     image(id: string): Promise<ApiResult<string>>
     update(input: z.infer<typeof NoteUpdateSchema>): Promise<ApiResult<Note>>
     updateItem(input: { id: string; expectedRevision: number; body: string; tags: string[]; subcategoryId?: string | null; categoryId?: string | null; images?: (ImageRef & { dataUrl?: string })[] }): Promise<ApiResult<Note & { meetingTitle: string | null }>>
