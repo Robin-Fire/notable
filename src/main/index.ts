@@ -1,3 +1,5 @@
+import { z as Z } from 'zod'
+import { ImageRefSchema } from '../shared/contracts'
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, Menu, nativeImage, screen, shell, Tray, type Display } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import fs from 'node:fs'
@@ -7,7 +9,8 @@ import os from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { Store } from './storage/database'
 import { SettingsStore } from './settings'
-import { CaptureSubmitSchema, CategoryNameSchema, ClassifyItemSchema, DeletedPlannerEventSchema, IdsSchema, InboxPageSchema, ItemCategorySchema, NoteFilterSchema, NoteUpdateSchema, PlannerBacklogQuerySchema, PlannerBacklogReorderSchema, PlannerCompleteSchema, PlannerEventInputSchema, PlannerMoveSchema, PlannerQuerySchema, PlannerReadySchema, SettingsSchema, TagNameSchema, TagUpdateSchema } from '../shared/contracts'
+import { CalendarHoursSchema, SettingsPatchSchema, PlannerTaskCreateSchema, PlannerTaskScheduleSchema, PlannerEventTimingSchema } from '../shared/contracts'
+import { CaptureSubmitSchema, CategoryNameSchema, CategoryUpdateSchema, CategoriesReorderSchema, TagsReorderSchema, ClassifyItemSchema, DeletedPlannerEventSchema, IdsSchema, InboxPageSchema, ItemCategorySchema, NoteFilterSchema, NoteUpdateSchema, PlannerBacklogQuerySchema, PlannerBacklogReorderSchema, PlannerCompleteSchema, PlannerEventInputSchema, PlannerMoveSchema, PlannerQuerySchema, PlannerReadySchema, TagNameSchema, TagUpdateSchema } from '../shared/contracts'
 import { AppError, messageOf } from '../shared/errors'
 
 // Reuse the original profile on upgrades; custom test profiles stay isolated.
@@ -102,7 +105,7 @@ function placeCapture() {
 function createCaptureWindow() {
   if (captureWindow && !captureWindow.isDestroyed()) return captureWindow
   captureWindow = new BrowserWindow({
-    width: CAPTURE_WIDTH, height: 88, minWidth: 378, minHeight: 88, maxWidth: 1600, maxHeight: 240,
+    width: CAPTURE_WIDTH, height: 88, minWidth: 378, minHeight: 88, maxWidth: 1600, maxHeight: 340,
     show: false, frame: false, resizable: false, movable: false, minimizable: false, maximizable: false,
     skipTaskbar: true, alwaysOnTop: true, transparent: true, backgroundColor: '#00000000', hasShadow: false,
     webPreferences: { preload: path.join(__dirname, '../preload/capture.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
@@ -138,6 +141,9 @@ function createNotesWindow(view: 'all' | 'inbox' | 'calenban' | 'trash' | 'setti
   })
   protect(notesWindow)
   secureWindow(notesWindow, 'notes')
+  notesWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) notesReady = false
+  })
   notesWindow.on('ready-to-show', () => { if (!isLoginLaunch) notesWindow?.show() })
   notesWindow.on('close', (event) => {
     if (!isQuitting && settings.get().closeToTray) { event.preventDefault(); notesWindow?.hide() }
@@ -268,23 +274,24 @@ function registerIpc() {
   roleHandler('updates:install', 'notes', () => { if (updateStatus.status === 'downloaded') autoUpdater.quitAndInstall(); })
   roleHandler('capture:get-state', 'capture', () => {
     const draft = store?.getCaptureDraft()
-    return { body: draft?.body ?? '', images: draft?.images ?? [], generation: draft?.generation ?? draftGeneration, revision: draft?.revision ?? 0, categoryId: draft?.categoryId ?? null, shortcut: settings.get().shortcut, theme: settings.get().theme, available: Boolean(store) }
+    return { body: draft?.body ?? '', images: draft?.images ?? [], generation: draft?.generation ?? draftGeneration, revision: draft?.revision ?? 0, categoryId: draft?.categoryId ?? null, subcategoryId: draft?.subcategoryId ?? null, tags:draft?.tags??[], shortcut: settings.get().shortcut, theme: settings.get().theme, available: Boolean(store) }
   })
   roleHandler('capture:categories', 'capture', () => requireStore().taxonomy().categories)
+  roleHandler('capture:subcategories', 'capture', () => requireStore().taxonomy().subcategories)
   roleHandler('capture:update-draft', 'capture', (_event, raw) => {
-    const input = raw as { body: string; generation: number; revision: number; categoryId?: string | null }
+    const input = raw as { body: string; generation: number; revision: number; categoryId?: string | null; subcategoryId?: string | null; tags?:string[] }
     if (typeof input.body !== 'string' || [...input.body].length > 50_000 || input.body.length > 200_000 || !Number.isInteger(input.generation) || !Number.isInteger(input.revision) || (input.categoryId !== undefined && input.categoryId !== null && !/^[0-9a-f-]{36}$/i.test(input.categoryId))) throw new AppError('INVALID_INPUT', 'This draft is too large or invalid.')
-    const next = requireStore().updateDraft(input.body, input.generation, input.revision, input.categoryId ?? null)
+    const next = requireStore().updateDraft(input.body, input.generation, input.revision, input.categoryId ?? null, Z.string().uuid().nullable().optional().parse(input.subcategoryId), Z.array(TagNameSchema).max(20).optional().parse(input.tags))
     return { revision: next }
   })
   roleHandler('capture:flush-before-quit', 'capture', (_event, raw) => {
-    const input = raw as { body: string; generation: number; revision: number; categoryId?: string | null }
+    const input = raw as { body: string; generation: number; revision: number; categoryId?: string | null; subcategoryId?: string | null; tags?:string[] }
     if (typeof input.body !== 'string' || [...input.body].length > 50_000 || input.body.length > 100_000 || !Number.isInteger(input.generation) || input.generation < 0 || !Number.isInteger(input.revision) || input.revision < 0 || (input.categoryId !== undefined && input.categoryId !== null && !/^[0-9a-f-]{36}$/i.test(input.categoryId))) throw new AppError('INVALID_INPUT', 'This draft is too large or invalid.')
-    return { revision: requireStore().updateDraft(input.body, input.generation, input.revision, input.categoryId ?? null) }
+    return { revision: requireStore().updateDraft(input.body, input.generation, input.revision, input.categoryId ?? null, Z.string().uuid().nullable().optional().parse(input.subcategoryId), Z.array(TagNameSchema).max(20).optional().parse(input.tags)) }
   })
   roleHandler('capture:submit', 'capture', (_event, raw) => {
     const input = CaptureSubmitSchema.parse(raw)
-    const id = requireStore().submitCapture(input.requestId, input.generation, input.body, input.categoryId ?? null)
+    const id = requireStore().submitCapture(input.requestId, input.generation, input.body, input.categoryId ?? null, Z.string().uuid().nullable().optional().parse(input.subcategoryId), Z.array(TagNameSchema).max(20).optional().parse(input.tags))
     broadcastChange()
     setImmediate(() => void makeAutomaticBackup())
     return { id }
@@ -306,19 +313,33 @@ function registerIpc() {
   roleHandler('notes:list', 'notes', (_event, raw) => requireStore().listNotes(NoteFilterSchema.parse(raw)))
   roleHandler('notes:tags', 'notes', () => requireStore().listTags())
   roleHandler('notes:taxonomy', 'notes', () => requireStore().taxonomy())
+  roleHandler('notes:subcategory:create','notes',(_event,raw)=> { const input=Z.object({name:TagNameSchema,categoryId:Z.string().uuid()}).parse(raw); const result=requireStore().createSubcategory(input.name,input.categoryId); broadcastChange(); return result })
+  roleHandler('notes:subcategory:update','notes',(_event,raw)=> { const input=Z.object({id:Z.string().uuid(),name:TagNameSchema,color:Z.string().regex(/^#[0-9a-f]{6}$/i)}).parse(raw); requireStore().updateSubcategory(input.id,input.name,input.color); broadcastChange() })
+  roleHandler('notes:subcategory:delete','notes',(_event,raw)=> { requireStore().deleteSubcategory(IdsSchema.element.parse(raw)); broadcastChange() })
+  roleHandler('notes:subcategories:reorder','notes',(_event,raw)=> { const input=Z.object({categoryId:Z.string().uuid(),ids:IdsSchema}).parse(raw); requireStore().reorderSubcategories(input.categoryId,input.ids); broadcastChange() })
+  roleHandler('notes:migration-status','notes',()=>requireStore().migrationStatus())
+  roleHandler('notes:migration-acknowledge','notes',()=>requireStore().acknowledgeMigration())
+  roleHandler('notes:migration-review','notes',()=>requireStore().migrationReview())
+  roleHandler('notes:migration-review:resolve','notes',(_event,raw)=> { const input=Z.object({id:Z.string().uuid(),expectedRevision:Z.number().int().nonnegative(),subcategoryId:Z.string().uuid().nullable(),categoryId:Z.string().uuid().nullable().optional()}).parse(raw); requireStore().resolveMigrationReview(input.id,input.expectedRevision,input.subcategoryId,input.categoryId); broadcastChange() })
   roleHandler('notes:category:create', 'notes', (_event, raw) => { const result = requireStore().createCategory(CategoryNameSchema.parse(raw)); broadcastChange('notes'); return result })
-  roleHandler('notes:tag:create', 'notes', (_event, raw) => { const input = raw as { name?: unknown; categoryId?: unknown }; const name = TagNameSchema.parse(input?.name); const categoryId = input?.categoryId === null ? null : IdsSchema.element.parse(input?.categoryId); const result = requireStore().createTag(name, categoryId); broadcastChange('notes'); return result })
-  roleHandler('notes:tag:update', 'notes', (_event, raw) => { const input = TagUpdateSchema.parse(raw); requireStore().updateTag(input.id, input.categoryId, input.color); broadcastChange('notes') })
+  roleHandler('notes:category:update', 'notes', (_event, raw) => { const input = CategoryUpdateSchema.parse(raw); const result = requireStore().updateCategory(input.id, input.name); broadcastChange('notes'); return result })
+  roleHandler('notes:category:delete', 'notes', (_event, raw) => { requireStore().deleteCategory(IdsSchema.element.parse(raw)); broadcastChange('notes') })
+  roleHandler('notes:categories:reorder', 'notes', (_event, raw) => { const input = CategoriesReorderSchema.parse(raw); requireStore().reorderCategories(input.ids); broadcastChange('notes') })
+  roleHandler('notes:tags:reorder', 'notes', (_event, raw) => { const input = TagsReorderSchema.parse(raw); requireStore().reorderTags(input.categoryId, input.ids); broadcastChange('notes') })
+  roleHandler('notes:tag:create', 'notes', (_event, raw) => { const input = raw as { name?: unknown; categoryId?: unknown }; const name = TagNameSchema.parse(input?.name); const categoryId = null; const result = requireStore().createTag(name, categoryId); broadcastChange('notes'); return result })
+  roleHandler('notes:tag:update', 'notes', (_event, raw) => { const input = TagUpdateSchema.parse(raw); requireStore().updateTag(input.id, input.categoryId, input.color, input.name); broadcastChange('notes') })
+  roleHandler('notes:tag:delete', 'notes', (_event, raw) => { requireStore().deleteTag(IdsSchema.element.parse(raw)); broadcastChange('notes') })
   roleHandler('notes:get', 'notes', (_event, id) => requireStore().getNote(String(id)))
   roleHandler('notes:image', 'notes', (_event, id) => requireStore().getItemImage(String(id)))
   roleHandler('notes:update', 'notes', (_event, raw) => { const input = NoteUpdateSchema.parse(raw); const result = requireStore().updateNote(input.id, input.expectedRevision, input.body); broadcastChange('notes'); return result })
   roleHandler('notes:update-item', 'notes', (_event, raw) => {
-    const input = raw as { id?: unknown; expectedRevision?: unknown; body?: unknown; tags?: unknown; categoryId?: unknown }
+    const input = raw as { id?: unknown; expectedRevision?: unknown; body?: unknown; tags?: unknown; categoryId?: unknown; images?: unknown; subcategoryId?: unknown }
     if (typeof input?.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(input.id) || !Number.isInteger(input.expectedRevision) || typeof input.body !== 'string' || [...input.body].length > 50_000 || !Array.isArray(input.tags) || input.tags.length > 20 || input.tags.some((tag) => typeof tag !== 'string' || tag.length > 80) || (input.categoryId !== undefined && input.categoryId !== null && (typeof input.categoryId !== 'string' || !/^[0-9a-f-]{36}$/i.test(input.categoryId)))) throw new AppError('INVALID_INPUT', 'This item is too large or invalid.')
-    const result = requireStore().updateItem(input.id, input.expectedRevision as number, input.body, input.tags as string[], input.categoryId as string | null | undefined)
+    const images = input.images === undefined ? undefined : Z.array(ImageRefSchema.extend({ dataUrl: Z.string().max(7_000_000).optional() })).max(5).parse(input.images)
+    const result = requireStore().updateItem(input.id, input.expectedRevision as number, input.body, input.tags as string[], input.categoryId as string | null | undefined, images, Z.string().uuid().nullable().optional().parse(input.subcategoryId))
     broadcastChange(); return result
   })
-  roleHandler('notes:set-category', 'notes', (_event, raw) => { const input = ItemCategorySchema.parse(raw); requireStore().setItemCategory(input.id, input.categoryId); broadcastChange() })
+  roleHandler('notes:set-category', 'notes', (_event, raw) => { const input = ItemCategorySchema.parse(raw); requireStore().setItemCategory(input.id, input.categoryId, input.subcategoryId); broadcastChange() })
   roleHandler('notes:set-tags', 'notes', (_event, raw) => { const input = raw as { id?: unknown; tags?: unknown }; if (typeof input?.id !== 'string' || !Array.isArray(input.tags) || input.tags.length > 20 || input.tags.some((tag) => typeof tag !== 'string' || tag.length > 80)) throw new AppError('INVALID_INPUT', 'Choose up to 20 valid tags.'); requireStore().setItemTags(input.id, input.tags as string[]); broadcastChange() })
   roleHandler('notes:trash', 'notes', (_event, raw) => { const ids = IdsSchema.parse(raw); requireStore().trash(ids); broadcastChange() })
   roleHandler('notes:restore', 'notes', (_event, raw) => { const ids = IdsSchema.parse(raw); requireStore().restore(ids); broadcastChange() })
@@ -339,13 +360,16 @@ function registerIpc() {
   roleHandler('planner:inbox', 'notes', (_event, raw) => { const input = InboxPageSchema.parse(raw ?? {}); return requireStore().listInbox(input.cursor, input.limit) })
   roleHandler('planner:inbox-count', 'notes', () => requireStore().inboxCount())
   roleHandler('planner:unfile', 'notes', (_event, raw) => { const id = IdsSchema.parse([raw])[0]!; requireStore().unfilePlannerTask(id); broadcastChange() })
-  roleHandler('planner:classify', 'notes', (_event, raw) => { const input = ClassifyItemSchema.parse(raw); requireStore().classifyItem(input.id, input.kind, input.tags, input.categoryId); broadcastChange() })
+  roleHandler('planner:classify', 'notes', (_event, raw) => { const input = ClassifyItemSchema.parse(raw); requireStore().classifyItem(input.id, input.kind, input.tags, input.categoryId, input.subcategoryId); broadcastChange() })
   roleHandler('planner:tasks', 'notes', (_event, raw) => { const input = PlannerQuerySchema.parse(raw); return requireStore().listPlanner(input.from, input.to) })
   roleHandler('planner:backlog', 'notes', (_event, raw) => { const input = PlannerBacklogQuerySchema.parse(raw ?? {}); return requireStore().listBacklog(input) })
-  roleHandler('planner:ready', 'notes', (_event, raw) => { const input = PlannerReadySchema.parse(raw); requireStore().setTaskReady(input.id); broadcastChange('planner') })
+  roleHandler('planner:ready', 'notes', (_event, raw) => { const input = PlannerReadySchema.parse(raw); requireStore().setTaskReady(input.id); broadcastChange() })
   roleHandler('planner:complete', 'notes', (_event, raw) => { const input = PlannerCompleteSchema.parse(raw); requireStore().setTaskCompleted(input.id, input.completed); broadcastChange() })
   roleHandler('planner:backlog-reorder', 'notes', (_event, raw) => { const input = PlannerBacklogReorderSchema.parse(raw); requireStore().reorderBacklog(input.id, input.categoryId, input.beforeId); broadcastChange() })
   roleHandler('planner:move', 'notes', (_event, raw) => { const input = PlannerMoveSchema.parse(raw); requireStore().movePlannerTask(input.id, input.plannedDate, input.beforeEventId, input.beforeId); broadcastChange('planner') })
+  roleHandler('planner:task:schedule', 'notes', (_event, raw) => { const task = requireStore().schedulePlannerTask(PlannerTaskScheduleSchema.parse(raw)); broadcastChange(); return task })
+  roleHandler('planner:task:create', 'notes', (_event, raw) => { const task = requireStore().createPlannerTask(PlannerTaskCreateSchema.parse(raw)); broadcastChange(); return task })
+  roleHandler('planner:event:timing', 'notes', (_event, raw) => { const event = requireStore().updatePlannerEventTiming(PlannerEventTimingSchema.parse(raw)); broadcastChange('planner'); return event })
   roleHandler('planner:event:create', 'notes', (_event, raw) => { const input = PlannerEventInputSchema.parse(raw); const event = requireStore().savePlannerEvent(input); broadcastChange('planner'); return event })
   roleHandler('planner:event:update', 'notes', (_event, raw) => { const input = PlannerEventInputSchema.parse(raw); if (!input.id) throw new AppError('INVALID_INPUT', 'Choose a meeting to update.'); const event = requireStore().updatePlannerEvent({ ...input, id: input.id }); broadcastChange('planner'); return event })
   roleHandler('planner:event:delete', 'notes', (_event, id) => { if (typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)) throw new AppError('INVALID_INPUT', 'Invalid meeting.'); const snapshot = requireStore().deletePlannerEvent(id); broadcastChange('planner'); return snapshot })
@@ -353,13 +377,15 @@ function registerIpc() {
   roleHandler('settings:get', 'notes', () => settingsView())
   roleHandler('settings:update', 'notes', (_event, raw) => {
     const input = raw as Record<string, unknown>
-    const allowed = ['shortcut', 'launchAtLogin', 'theme', 'monitor', 'captureProtection', 'protectionTestApp', 'protectionTestDate', 'closeToTray']
+    const allowed = ['shortcut', 'launchAtLogin', 'theme', 'monitor', 'captureProtection', 'protectionTestApp', 'protectionTestDate', 'closeToTray', 'calendarStartMinute', 'calendarEndMinute']
     if (Object.keys(input).some((key) => ![...allowed, 'shortcutEnabled', 'firstRunComplete'].includes(key))) throw new AppError('INVALID_INPUT', 'A setting is not supported.')
     if (input.firstRunComplete !== undefined && typeof input.firstRunComplete !== 'boolean') throw new AppError('INVALID_INPUT', 'Invalid setup state.')
     if (input.shortcutEnabled !== undefined && typeof input.shortcutEnabled !== 'boolean') throw new AppError('INVALID_INPUT', 'Invalid shortcut setting.')
     if (input.shortcut !== undefined) {
       if (typeof input.shortcut !== 'string' || input.shortcut.length < 3 || input.shortcut.length > 60) throw new AppError('INVALID_SHORTCUT', 'Choose a valid keyboard shortcut.')
     }
+    const parsed = SettingsPatchSchema.parse(input)
+    CalendarHoursSchema.parse({ ...settings.get(), ...parsed })
     const old = settings.get().shortcut
     const newShortcut = typeof input.shortcut === 'string' ? input.shortcut : old
     const oldEnabled = settings.get().shortcutEnabled
@@ -367,7 +393,6 @@ function registerIpc() {
     if (enabled && (newShortcut !== old || !globalShortcut.isRegistered(old))) {
       if (!globalShortcut.register(newShortcut, showCapture)) throw new AppError('SHORTCUT_BUSY', 'That shortcut is already in use. Your current shortcut remains active.')
     }
-    const parsed = SettingsSchema.partial().parse(input)
     if (!enabled && oldEnabled) globalShortcut.unregister(old)
     else if (enabled && newShortcut !== old) globalShortcut.unregister(old)
     const result = settings.patch({ ...parsed, ...(typeof input.protectionTestDate === 'string' && input.protectionTestDate ? { protectionTestOS: os.release() } : {}) })
@@ -378,6 +403,7 @@ function registerIpc() {
     }
     for (const win of [captureWindow, notesWindow]) if (win && !win.isDestroyed()) win.webContents.send('capture:state', { shortcut: result.shortcut, theme: result.theme })
     syncTray()
+    broadcastSettingsChange()
     return settingsView()
   })
   roleHandler('settings:open-folder', 'notes', async () => {
@@ -400,16 +426,24 @@ function registerIpc() {
     const win = captureWindow
     if (!win) return
     const display = displayForCapture()
-    const height = Math.round(Math.min(Math.max(88, rawHeight), Math.min(220, display.workArea.height - 24)))
+    const height = Math.round(Math.min(Math.max(88, rawHeight), Math.min(320, display.workArea.height - 24)))
     const current = win.getBounds()
     if (current.height === height) return
     const { x, y, width, height: workHeight } = display.workArea
     const captureWidth = Math.min(CAPTURE_WIDTH, Math.max(378, width - 14))
     win.setBounds({ x: Math.round(x + (width - captureWidth) / 2), y: Math.round(y + workHeight - height - 15), width: captureWidth, height }, false)
   })
-  ipcMain.on('windows:open-capture', (event) => { if (event.sender === notesWindow?.webContents) showCapture() })
+  ipcMain.on('windows:open-capture', (event,raw) => {
+    if(event.sender!==notesWindow?.webContents)return
+    try {
+      const context=raw===undefined?null:Z.object({categoryId:Z.string().uuid().nullable(),subcategoryId:Z.string().uuid().nullable().optional(),tags:Z.array(TagNameSchema).max(20).optional()}).parse(raw)
+      const draft=context&&!captureWindow?.isVisible()?requireStore().prepareCaptureContext(context.categoryId,context.subcategoryId??null,context.tags):null
+      showCapture()
+      if(draft)captureWindow?.webContents.send('capture:state',draft)
+    }catch{showCapture()}
+  })
   ipcMain.on('notes:ready', (event) => {
-    if (event.sender !== notesWindow?.webContents) return
+    if (event.sender !== notesWindow?.webContents || notesReady) return
     notesReady = true
     notesWindow.webContents.send('notes:view', pendingNotesView)
   })
@@ -452,8 +486,8 @@ async function exportData(raw: unknown) {
     const dueDate = 'dueDate' in row ? row.dueDate : 'due_date' in row ? row.due_date : null
     const task = taskMetadata.get(row.id)
     const effectivePlannedDate = plannedDate ?? task?.plannedDate ?? null
-    const planState = kind !== 'task' ? '' : effectivePlannedDate ? `Planned ${effectivePlannedDate}` : task?.ready ? 'Ready' : 'Backlog'
-    const metadata = [kind === 'task' ? `To-do${taskStatus === 'done' ? ' · Done' : ''}` : kind === 'inbox' ? 'Inbox' : 'Note', task?.categoryName ? `Category ${task.categoryName}` : '', planState, ...tags.map((tag) => `#${tag}`), dueDate ? `Due ${dueDate}` : ''].filter(Boolean).join(' · ')
+    const planState = kind !== 'task' ? '' : task?.plannedStartAt != null && task.plannedEndAt != null ? `Scheduled ${new Date(task.plannedStartAt).toLocaleString()} – ${new Date(task.plannedEndAt).toLocaleString()}` : effectivePlannedDate ? `Planned ${effectivePlannedDate}` : task?.ready ? 'Ready' : 'Backlog'
+    const metadata = [kind === 'task' ? `To-do${taskStatus === 'done' ? ' · Done' : ''}` : kind === 'inbox' ? 'Inbox' : 'Note', task?.categoryName ? `Category ${task.categoryName}` : '', task?.subcategoryName ? `Subcategory ${task.subcategoryName}`:'', planState, ...tags.map((tag) => `#${tag}`), dueDate ? `Due ${dueDate}` : ''].filter(Boolean).join(' · ')
     const images = db.getNote(row.id)?.images ?? []
     const imageText = images.map((image, index) => `![Image ${index + 1}](${db.getItemImage(image.id)})`).join('\n\n')
     const body = [metadata, row.body, imageText].filter(Boolean).join('\n\n')

@@ -1,3 +1,4 @@
+const legacyTaxonomy = require('./helpers/taxonomy-fixture.cjs')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
@@ -86,7 +87,7 @@ test('classification is one-shot and preserves task tags', () => {
   })
 })
 
-test('categories and tag colors persist while each tag belongs to one category', () => {
+test('categories and tag colors persist while tags remain independent', () => {
   withStore((store) => {
     const id = captureTask(store, 'Categorized task', ['Work'])
     const first = store.createCategory('Projects')
@@ -94,12 +95,39 @@ test('categories and tag colors persist while each tag belongs to one category',
     const work = store.taxonomy().tags.find((tag) => tag.name === 'Work')
     assert.equal(work.categoryId, null)
     store.updateTag(work.id, first.id, '#c2413b')
-    assert.equal(store.taxonomy().tags.find((tag) => tag.id === work.id).categoryId, first.id)
+    assert.equal(store.taxonomy().tags.find((tag) => tag.id === work.id).categoryId, null)
     assert.equal(store.taxonomy().tags.find((tag) => tag.id === work.id).color, '#c2413b')
     store.updateTag(work.id, second.id, '#2563eb')
-    assert.equal(store.taxonomy().tags.find((tag) => tag.id === work.id).categoryId, second.id)
+    assert.equal(store.taxonomy().tags.find((tag) => tag.id === work.id).categoryId, null)
     assert.equal(store.listNotes({ query: '', scope: 'notes', tags: ['Work'], limit: 50, sort: 'newest' }).items[0].id, id)
     assert.throws(() => store.createTag('work', first.id), /already exists/i)
+  })
+})
+
+test('deleting a category keeps its items and tags, while deleting a tag removes its item links', () => {
+  withStore((store) => {
+    const uncategorized = store.createTag('General', null)
+    const category = store.createCategory('Projects')
+    const projectTag = store.createTag('Planning', category.id)
+    const id = store.submitCapture(randomUUID(), 0, 'Keep this item', category.id)
+    store.classifyItem(id, 'note', [projectTag.name], category.id)
+
+    store.deleteCategory(category.id)
+
+    assert.equal(store.getNote(id).categoryId, null)
+    assert.deepEqual(store.getNote(id).tags, ['Planning'])
+    assert.equal(store.taxonomy().categories.some((entry) => entry.id === category.id), false)
+    assert.equal(store.taxonomy().tags.find((entry) => entry.id === projectTag.id).categoryId, null)
+    assert.deepEqual(store.db.prepare('SELECT id,position FROM item_tags ORDER BY position').all(), [
+      { id: uncategorized.id, position: 0 }, { id: projectTag.id, position: 1 },
+    ])
+
+    store.deleteTag(projectTag.id)
+
+    assert.ok(store.getNote(id))
+    assert.deepEqual(store.getNote(id).tags, [])
+    assert.deepEqual(store.taxonomy().tags.map((entry) => entry.id), [uncategorized.id])
+    assert.throws(() => store.deleteTag(projectTag.id), /tag no longer exists/i)
   })
 })
 
@@ -177,8 +205,10 @@ test('v7 migration assigns direct categories only from unambiguous legacy tags a
     store.db.prepare('UPDATE notes SET created_at=100 WHERE id=?').run(newest)
     store.db.prepare('UPDATE notes SET created_at=50 WHERE id=?').run(older)
 
-    store.db.exec('DROP INDEX notes_backlog_priority; ALTER TABLE notes DROP COLUMN backlog_position; ALTER TABLE drafts DROP COLUMN category_id; DELETE FROM schema_migrations WHERE version>=8;')
+    legacyTaxonomy(store, [[onlyOne.id,one.id],[alsoOne.id,one.id],[other.id,two.id]])
+    store.db.exec('DROP TRIGGER notes_timing_insert; DROP TRIGGER notes_timing_update; DROP INDEX notes_timed_plan; DROP INDEX notes_later; DROP INDEX item_tags_order; DROP INDEX notes_backlog_priority; ALTER TABLE notes DROP COLUMN planned_start_at; ALTER TABLE notes DROP COLUMN planned_end_at; ALTER TABLE notes DROP COLUMN is_later; ALTER TABLE item_tags DROP COLUMN position; ALTER TABLE notes DROP COLUMN backlog_position; ALTER TABLE drafts DROP COLUMN category_id; DELETE FROM schema_migrations WHERE version>=8;')
     store.close()
+    store = null
     store = new Store(file)
 
     assert.equal(store.getNote(note).categoryId, one.id)
@@ -463,3 +493,25 @@ test('recurring all-day and timed meetings preserve local calendar times across 
     })
   } finally { if (previousTimezone === undefined) delete process.env.TZ; else process.env.TZ = previousTimezone }
 })
+
+
+test('item image edits are atomic, retain attachments, and reject conflicts and foreign images', () => withStore(store => {
+  const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl8n+QAAAAASUVORK5CYII='
+  const id = captureTask(store, 'Original')
+  let note = store.getNote(id)
+  const added = { id: randomUUID(), mimeType: 'image/png', dataUrl }
+  note = store.updateItem(id, note.revision, 'With screenshot', ['Visual'], undefined, [added])
+  assert.equal(note.images.length, 1)
+  assert.equal(store.getItemImage(note.images[0].id), dataUrl)
+  assert.throws(() => store.updateItem(id, note.revision - 1, 'Stale', [], undefined, []), /changed elsewhere/)
+  assert.throws(() => store.updateItem(id, note.revision, 'Invalid', [], undefined, [...note.images, { ...added, dataUrl: 'data:image/png;base64,ZmFrZQ==' }]), /Paste a PNG/)
+  assert.equal(store.getNote(id).body, 'With screenshot')
+  assert.deepEqual(store.getNote(id).images, note.images)
+  const other = captureTask(store, 'Other')
+  assert.throws(() => store.updateItem(other, store.getNote(other).revision, 'Foreign', [], undefined, note.images), /no longer available/)
+  const retained = store.updateItem(id, note.revision, 'Retained', [], undefined, note.images)
+  assert.deepEqual(retained.images, note.images)
+  const removed = store.updateItem(id, retained.revision, 'Removed', [], undefined, [])
+  assert.deepEqual(removed.images, [])
+  assert.throws(() => store.getItemImage(note.images[0].id), /no longer available/)
+}))

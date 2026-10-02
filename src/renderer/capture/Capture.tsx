@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CompositionEvent, type KeyboardEvent } from 'react'
 import { AlertCircle, ArrowUpRight, Copy, CornerDownLeft, Folder, RotateCcw, X } from 'lucide-react'
-import type { CaptureState, Category } from '../../shared/contracts'
+import type { CaptureState, Category, Subcategory } from '../../shared/contracts'
 
 export function Capture() {
   const [state, setState] = useState<CaptureState>({ body: '', images: [], generation: 0, revision: 0, shortcut: 'Control+N', theme: 'system', available: false, categoryId: null })
+  const [subcategories,setSubcategories]=useState<Subcategory[]>([])
+  const captureTags=useRef<string[]>([])
+  const subcategoryId=useRef<string|null>(null)
   const [categories, setCategories] = useState<Category[]>([])
   const [body, setBody] = useState('')
   const [saving, setSaving] = useState(false)
@@ -34,6 +37,7 @@ export function Capture() {
       try {
         const result = await window.notiert.capture.categories()
         if (result.ok) setCategories(result.value)
+        const subs=await window.notiert.capture.subcategories();if(subs.ok)setSubcategories(subs.value)
       } catch { /* Keep capture usable if taxonomy is temporarily unavailable. */ }
     }
     const apply = (next: Partial<CaptureState>) => {
@@ -41,6 +45,8 @@ export function Capture() {
       if (typeof next.body === 'string') setBody(next.body)
       if (typeof next.generation === 'number') generation.current = next.generation
       if (typeof next.revision === 'number') revision.current = next.revision
+      if(next.tags!==undefined)captureTags.current=next.tags
+      if(next.subcategoryId!==undefined)subcategoryId.current=next.subcategoryId
       if (next.categoryId !== undefined) categoryId.current = next.categoryId
       if (next.theme) document.documentElement.dataset.theme = next.theme
       if (next.available !== undefined) void refreshCategories()
@@ -59,13 +65,13 @@ export function Capture() {
     input.style.height = 'auto'
     const contentHeight = Math.min(input.scrollHeight, 132)
     input.style.height = `${contentHeight}px`
-    resizeCapture(Math.min(220, Math.max(88, contentHeight + (categories.length ? 89 : 62) + (state.images.length ? 67 : 0) + (error || tooLong || !state.available ? 28 : 0))))
-  }, [body, categories.length, error, tooLong, state.available, state.images.length, resizeCapture])
+    resizeCapture(Math.min(320, Math.max(88, contentHeight + (categories.length ? 89 : 62)+(state.categoryId?27:0) + (state.tags?.length?25:0)+(state.images.length ? 67 : 0) + (error || tooLong || !state.available ? 28 : 0))))
+  }, [body, categories.length, error, tooLong, state.available, state.images.length, state.categoryId, state.tags, resizeCapture])
 
   const persistDraft = useCallback(async (draft: string, selectedCategory = categoryId.current) => {
     if (!state.available || saving) return
     revision.current += 1
-    const result = await window.notiert.capture.updateDraft({ body: draft, generation: generation.current, revision: revision.current, categoryId: selectedCategory })
+    const result = await window.notiert.capture.updateDraft({ body: draft, generation: generation.current, revision: revision.current, categoryId: selectedCategory,subcategoryId:subcategoryId.current,tags:captureTags.current })
     if (result.ok) revision.current = Math.max(revision.current, result.value.revision)
   }, [saving, state.available])
 
@@ -88,7 +94,7 @@ export function Capture() {
     const unsubscribe = window.notiert.capture.onQuitRequest(() => {
       clearTimeout(draftTimer.current)
       const draft = bodyRef.current
-      void window.notiert.capture.flushBeforeQuit({ body: draft, generation: generation.current, revision: revision.current + 1, categoryId: categoryId.current }).then((result) => {
+      void window.notiert.capture.flushBeforeQuit({ body: draft, generation: generation.current, revision: revision.current + 1, categoryId: categoryId.current,subcategoryId:subcategoryId.current,tags:captureTags.current }).then((result) => {
         if (result.ok) { revision.current = Math.max(revision.current, result.value.revision); window.notiert.capture.respondToQuit(true, draft) }
         else window.notiert.capture.respondToQuit(false, draft)
       }).catch(() => window.notiert.capture.respondToQuit(false, draft))
@@ -117,7 +123,7 @@ export function Capture() {
     const id = requestIdRef.current ?? crypto.randomUUID()
     requestIdRef.current = id
     try {
-      const result = await window.notiert.capture.submit({ requestId: id, generation: generation.current, body, categoryId: categoryId.current })
+      const result = await window.notiert.capture.submit({ requestId: id, generation: generation.current, body, categoryId: categoryId.current,subcategoryId:subcategoryId.current,tags:captureTags.current })
       if (!result.ok) { setError(result.message); return }
       setBody('')
       setState((current) => ({ ...current, images: [] }))
@@ -125,8 +131,8 @@ export function Capture() {
       requestIdRef.current = null
       revision.current = 0
       generation.current += 1
-      categoryId.current = null
-      setState((current) => ({ ...current, categoryId: null }))
+      categoryId.current = null;subcategoryId.current=null;captureTags.current=[]
+      setState((current) => ({ ...current, categoryId: null,subcategoryId:null,tags:[] }))
       try { await window.notiert.capture.dismiss('saved') } catch { /* The capture is already saved. */ }
       resizeCapture(categories.length ? 115 : 88)
     } catch { setError('The capture could not be saved. Your text and images are still here. Try again.') }
@@ -211,10 +217,12 @@ export function Capture() {
       />
       {categories.length > 0 && <label className="capture-category-control"><Folder size={13} /><span>Category</span><select aria-label="Capture category" disabled={saving} value={state.categoryId ?? ''} onChange={(event) => {
         const selected = event.target.value || null
-        categoryId.current = selected
-        setState((current) => ({ ...current, categoryId: selected }))
+        categoryId.current = selected;subcategoryId.current=null
+        setState((current) => ({ ...current, categoryId: selected,subcategoryId:null }))
         void persistDraft(bodyRef.current, selected)
       }}><option value="">Unassigned</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>}
+      {state.categoryId&&<label className="capture-category-control"><Folder size={13}/><span>Subcategory</span><select aria-label="Capture subcategory" disabled={saving} value={state.subcategoryId??''} onChange={event=>{subcategoryId.current=event.target.value||null;setState(current=>({...current,subcategoryId:subcategoryId.current}));void persistDraft(bodyRef.current)}}><option value="">No subcategory</option>{subcategories.filter(item=>item.categoryId===state.categoryId).map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
+      {!!state.tags?.length&&<div className="capture-context-tags" aria-label="Capture tags">{state.tags.map(tag=><span key={tag}>#{tag}<button type="button" aria-label={`Remove capture tag ${tag}`} disabled={saving} onClick={()=>{captureTags.current=captureTags.current.filter(value=>value!==tag);setState(current=>({...current,tags:captureTags.current}));void persistDraft(bodyRef.current)}}><X size={10}/></button></span>)}</div>}
       {state.images.length > 0 && <div className="capture-images" aria-label="Pasted images">{state.images.map((image, index) => <div className="capture-image" key={image.id}><img src={image.dataUrl} alt={`Pasted image ${index + 1}`} /><button type="button" aria-label={`Remove pasted image ${index + 1}`} onClick={() => void removeImage(image.id)} disabled={saving || imagePending}><X size={12} /></button></div>)}</div>}
       {(error || tooLong || !state.available) && <div className={`capture-alert ${!state.available || error ? 'is-error' : ''}`} id="capture-status" role="status">
         <AlertCircle size={14} /> <span>{!state.available ? 'Couldn’t reach local storage. This draft may not be persisted.' : tooLong ? 'A note can contain up to 50,000 characters. Existing text was kept.' : error}</span>

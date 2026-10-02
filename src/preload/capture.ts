@@ -4,7 +4,8 @@ import type { NotiertApi } from '../shared/contracts'
 const capture: Pick<NotiertApi, 'capture'> & { windows: Omit<NotiertApi['windows'], 'onView' | 'ready'> } = {
   capture: {
     getState: () => ipcRenderer.invoke('capture:get-state'),
-    categories: () => ipcRenderer.invoke('capture:categories'),
+    subcategories: () => ipcRenderer.invoke('capture:subcategories'),
+  categories: () => ipcRenderer.invoke('capture:categories'),
     updateDraft: (input) => ipcRenderer.invoke('capture:update-draft', input),
     flushBeforeQuit: (input) => ipcRenderer.invoke('capture:flush-before-quit', input),
     submit: (input) => ipcRenderer.invoke('capture:submit', input),

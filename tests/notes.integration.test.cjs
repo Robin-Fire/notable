@@ -10,26 +10,39 @@ const generated = path.join(__dirname, '.generated', 'notes')
 fs.mkdirSync(generated, { recursive: true })
 buildSync({ absWorkingDir: root, entryPoints: ['src/renderer/notes/NotesApp.tsx'], outfile: path.join(generated, 'NotesApp.cjs'), bundle: true, platform: 'node', format: 'cjs', packages: 'external', loader: { '.css': 'empty' } })
 buildSync({ absWorkingDir: root, entryPoints: ['src/renderer/browserPreview.ts'], outfile: path.join(generated, 'browserPreview.cjs'), bundle: true, platform: 'node', format: 'cjs', packages: 'external' })
+buildSync({ absWorkingDir: root, entryPoints: ['src/renderer/calenban/useCalendarMutations.ts'], outfile: path.join(generated, 'mutations.cjs'), bundle: true, platform: 'node', format: 'cjs', packages: 'external' })
+buildSync({ absWorkingDir: root, entryPoints: ['src/renderer/calenban/usePlannerData.ts'], outfile: path.join(generated, 'plannerData.cjs'), bundle: true, platform: 'node', format: 'cjs', packages: 'external' })
 
-const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' })
+const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true })
 global.window = dom.window
 global.document = dom.window.document
 global.HTMLElement = dom.window.HTMLElement
+global.Element = dom.window.Element
+global.Node = dom.window.Node
+global.getComputedStyle = dom.window.getComputedStyle
+global.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window)
+global.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window)
 global.Event = dom.window.Event
 global.KeyboardEvent = dom.window.KeyboardEvent
 global.MouseEvent = dom.window.MouseEvent
+global.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} }
+dom.window.HTMLElement.prototype.scrollTo = function () {}
+dom.window.HTMLElement.prototype.scrollIntoView = function () {}
+dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} })
 global.localStorage = dom.window.localStorage
 global.IS_REACT_ACT_ENVIRONMENT = true
 Object.defineProperty(global, 'navigator', { configurable: true, value: dom.window.navigator })
-const { render, screen, within, fireEvent, waitFor, act } = require('@testing-library/react')
+const { render, renderHook, screen, within, fireEvent, waitFor, act } = require('@testing-library/react')
 const React = require('react')
 const { NotesApp } = require(path.join(generated, 'NotesApp.cjs'))
+const { useCalendarMutations } = require(path.join(generated, 'mutations.cjs'))
+const { usePlannerData } = require(path.join(generated, 'plannerData.cjs'))
 
 const noteId = '11111111-1111-4111-8111-111111111111'
 const captureId = '22222222-2222-4222-8222-222222222222'
-const makeNote = (id, body, kind, categoryId = null) => ({ id, body, meetingId: null, createdAt: 1_800_000_000_000, updatedAt: 1_800_000_000_000, deletedAt: null, revision: 1, meetingTitle: null, kind, processedAt: null, categoryId, tags: [], images: [] })
+const makeNote = (id, body, kind, categoryId = null) => ({ id, body, meetingId: null, createdAt: 1_800_000_000_000, updatedAt: 1_800_000_000_000, deletedAt: null, revision: 1, meetingTitle: null, kind, processedAt: null, categoryId, subcategoryId:null, tags: [], images: [] })
 
-function setup({ taxonomy } = {}) {
+function setup({ taxonomy, calendarHours = {}, notesApi = {} } = {}) {
   localStorage.clear()
   let viewListener = () => {}
   const get = async (id) => ({ ok: true, value: id === captureId ? makeNote(captureId, 'Captured thought', 'inbox') : makeNote(noteId, 'Existing note', 'note') })
@@ -52,12 +65,13 @@ function setup({ taxonomy } = {}) {
       createEvent: async () => ({ ok: true, value: undefined }), updateEvent: async () => ({ ok: true, value: undefined }), deleteEvent: async () => ({ ok: true, value: undefined }), undoDeleteEvent: async () => ({ ok: true, value: undefined }), onChanged: () => () => {},
     },
     settings: {
-      get: async () => ({ ok: true, value: { shortcut: 'Control+N', shortcutEnabled: true, shortcutRegistered: true, launchAtLogin: false, theme: 'light', monitor: 'active', captureProtection: false, protectionTestApp: '', protectionTestDate: '', protectionTestOS: '', lastBackupAt: null, backupWarning: false, firstRunComplete: true, closeToTray: true } }),
+      get: async () => ({ ok: true, value: { shortcut: 'Control+N', shortcutEnabled: true, shortcutRegistered: true, launchAtLogin: false, theme: 'light', monitor: 'active', captureProtection: false, protectionTestApp: '', protectionTestDate: '', protectionTestOS: '', lastBackupAt: null, backupWarning: false, firstRunComplete: true, closeToTray: true, calendarStartMinute: 480, calendarEndMinute: 1080, ...calendarHours } }),
       displays: async () => ({ ok: true, value: [] }), update: async () => ({ ok: true, value: {} }), onChanged: () => () => {}, openFolder: async () => ({ ok: true, value: undefined }),
     },
     data: { export: async () => ({ ok: true, value: undefined }), backup: async () => ({ ok: true, value: undefined }), restore: async () => ({ ok: true, value: undefined }), diagnostics: async () => ({ ok: true, value: undefined }) },
     windows: { openCapture() {}, openNotes() {}, openSettings() {}, quit() {}, ready() {}, onView(callback) { viewListener = callback; return () => {} } },
   }
+  Object.assign(api.notes, notesApi)
   window.notiert = api
   const view = render(React.createElement(NotesApp))
   return { ...view, api, changeView: (next) => act(() => viewListener(next)) }
@@ -92,10 +106,89 @@ test('browser preview capture enters Inbox and a filed task moves through Backlo
   assert.ok(ready.value.tasks.some((task) => task.id === created.id && task.plannedDate === null))
   const app = render(React.createElement(NotesApp))
   try {
-    fireEvent.click(await screen.findByRole('button', { name: 'Plan' }))
-    await screen.findByRole('heading', { name: 'Plan' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Calendar' }))
+    await screen.findByRole('heading', { name: 'Calendar' })
+    await waitFor(() => assert.ok(document.querySelector('.calendar-ready')?.textContent.includes('New browser task')))
     await act(async () => { await window.notiert.planner.move({ id: created.id, plannedDate: '2026-09-27', beforeEventId: null, beforeId: null }) })
-    assert.ok(screen.getByRole('heading', { name: 'Plan' }))
+    assert.ok(screen.getByRole('heading', { name: 'Calendar' }))
+  } finally { app.unmount() }
+})
+
+test('a category task appears in Backlog, moves to Later, and returns at the top', async () => {
+  localStorage.clear()
+  delete require.cache[require.resolve(path.join(generated, 'browserPreview.cjs'))]
+  require(path.join(generated, 'browserPreview.cjs'))
+  const app = render(React.createElement(NotesApp))
+  try {
+    fireEvent.click(screen.getByRole('button', { name: 'Backlog', exact: true }))
+    const group = within(await screen.findByRole('region', { name: 'Work backlog' }))
+    fireEvent.click(group.getByRole('button', { name: 'Add task to Work' }))
+    const dialog = within(await screen.findByRole('dialog', { name: 'Add a to-do' }))
+    fireEvent.change(dialog.getByLabelText('Task'), { target: { value: 'Category task round trip' } })
+    fireEvent.click(dialog.getByRole('button', { name: 'Add to Backlog' }))
+    await group.findByRole('button', { name: 'Category task round trip' })
+    fireEvent.click(group.getByRole('button', { name: 'Later', exact: true }))
+    await waitFor(() => assert.ok(!group.queryByRole('button', { name: 'Category task round trip' })))
+    fireEvent.click(within(document.querySelector('.sidebar')).getByRole('button', { name: 'Later', exact: true }))
+    const later = within(await screen.findByRole('region', { name: 'Work backlog' }))
+    await later.findByRole('button', { name: 'Category task round trip' })
+    fireEvent.click(later.getByRole('button', { name: 'Return to Backlog' }))
+    await waitFor(() => assert.ok(!later.queryByRole('button', { name: 'Category task round trip' })))
+    fireEvent.click(screen.getByRole('button', { name: 'Backlog', exact: true }))
+    await within(await screen.findByRole('region', { name: 'Work backlog' })).findByRole('button', { name: 'Category task round trip' })
+  } finally { app.unmount() }
+})
+
+test('older note list responses cannot overwrite newer search results', async () => {
+  const requests = []
+  const app = setup({ notesApi: { list: (filter) => new Promise((resolve) => requests.push({ filter, resolve })) } })
+  try {
+    await waitFor(() => assert.equal(requests.length, 1))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search items' }), { target: { value: 'current' } })
+    await waitFor(() => assert.equal(requests.length, 2))
+    await act(async () => requests[1].resolve({ ok: true, value: { items: [makeNote(noteId, 'Current result', 'note')], nextCursor: null, total: 1 } }))
+    await screen.findByRole('button', { name: 'Open note Current result' })
+    await act(async () => requests[0].resolve({ ok: true, value: { items: [makeNote(noteId, 'Old result', 'note')], nextCursor: null, total: 1 } }))
+    assert.ok(screen.getByRole('button', { name: 'Open note Current result' }))
+    assert.equal(screen.queryByRole('button', { name: 'Open note Old result' }), null)
+  } finally { app.unmount() }
+})
+
+test('opening notes quickly keeps the selected detail and ignores results after navigation', async () => {
+  const first = makeNote(noteId, 'First note', 'note'), second = makeNote(captureId, 'Second note', 'note')
+  const requests = []
+  const app = setup({ notesApi: {
+    list: async () => ({ ok: true, value: { items: [first, second], nextCursor: null, total: 2 } }),
+    get: (id) => new Promise((resolve) => requests.push({ id, resolve })),
+  } })
+  try {
+    fireEvent.click(await screen.findByRole('button', { name: 'Open note First note' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open note Second note' }))
+    await act(async () => requests[1].resolve({ ok: true, value: second }))
+    await act(async () => requests[0].resolve({ ok: true, value: first }))
+    assert.equal(document.querySelector('.detail-note-text').textContent, second.body)
+    fireEvent.click(screen.getByRole('button', { name: 'Open note First note' }))
+    app.changeView('inbox')
+    await act(async () => requests[2].resolve({ ok: false, code: 'NOT_FOUND', message: 'Old detail error' }))
+    assert.equal(screen.queryByText('Old detail error'), null)
+  } finally { app.unmount() }
+})
+
+test('taxonomy refresh ignores old responses and does not trigger another notes query', async () => {
+  const requests = []
+  let changed, listCalls = 0
+  const app = setup({ taxonomy: () => new Promise((resolve) => requests.push(resolve)), notesApi: {
+    onChanged: (listener) => { changed = listener; return () => {} },
+    list: async () => { listCalls++; return { ok: true, value: { items: [], nextCursor: null, total: 0 } } },
+  } })
+  try {
+    await act(async () => changed())
+    assert.equal(requests.length, 2)
+    await act(async () => requests[1]({ ok: true, value: { categories: [{ id: noteId, name: 'Current category' }], tags: [] } }))
+    await act(async () => requests[0]({ ok: true, value: { categories: [{ id: noteId, name: 'Old category' }], tags: [] } }))
+    assert.ok(screen.getByRole('button', { name: 'Current category', exact: true }))
+    assert.equal(screen.queryByRole('button', { name: 'Old category', exact: true }), null)
+    assert.equal(listCalls, 2)
   } finally { app.unmount() }
 })
 
@@ -120,14 +213,14 @@ test('Backlog groups tasks by category and sends a task to Ready', async () => {
   let readyInput
   app.api.planner.backlog = async () => ({ ok: true, value: { items: [backlogTask], nextCursor: null, total: 1, tagNames: ['Planning', 'Other category tag'] } })
   app.api.planner.setReady = async (input) => { readyInput = input; return { ok: true, value: undefined } }
-  app.api.notes.taxonomy = async () => ({ ok: true, value: { categories: [{ id: projectId, name: 'Client A' }, { id: '99999999-9999-4999-8999-999999999999', name: 'Client B' }], tags: [{ id: '88888888-8888-4888-8888-888888888888', name: 'Planning', categoryId: projectId, color: '#85858e', count: 1 }] } })
+  app.api.notes.taxonomy = async () => ({ ok: true, value: { categories: [{ id: projectId, name: 'Client A' }, { id: '99999999-9999-4999-8999-999999999999', name: 'Client B' }], subcategories:[{id:'88888888-8888-4888-8888-888888888888',name:'Planning',categoryId:projectId,color:'#85858e',count:1}], tags: [{ id: '88888888-8888-4888-8888-888888888888', name: 'Planning', categoryId: projectId, color: '#85858e', count: 1 }] } })
   try {
     fireEvent.click(screen.getByRole('button', { name: 'Backlog' }))
-    await screen.findByRole('button', { name: /Client A/ })
+    await screen.findByRole('region', { name: 'Client A backlog' })
     const categoryGroup = within(screen.getByRole('region', { name: 'Client A backlog' }))
     assert.equal((await categoryGroup.findByRole('button', { name: 'Planning', pressed: true })).getAttribute('aria-pressed'), 'true')
-    assert.equal(categoryGroup.getByRole('button', { name: 'No tag', pressed: true }).getAttribute('aria-pressed'), 'true')
-    assert.equal(categoryGroup.getByRole('button', { name: 'Other category tag', pressed: true }).getAttribute('aria-pressed'), 'true')
+    assert.equal(categoryGroup.getByRole('button', { name: 'No subcategory', pressed: true }).getAttribute('aria-pressed'), 'true')
+    assert.ok(categoryGroup.getByRole('button', {name:'Tag filter for Client A: All tags'}))
     fireEvent.click(categoryGroup.getByRole('button', { name: 'Planning', pressed: true }))
     fireEvent.click(await categoryGroup.findByRole('button', { name: 'Select all' }))
     assert.equal(categoryGroup.getByRole('button', { name: 'Planning', pressed: true }).getAttribute('aria-pressed'), 'true')
@@ -153,32 +246,61 @@ test('browser capture saves the chosen category to Inbox', async () => {
   } finally { app.unmount() }
 })
 
-test('Inbox offers category tags as one-click choices and files the selected category', async () => {
-  const categoryId = '77777777-7777-4777-8777-777777777777'
-  const app = setup({ taxonomy: async () => ({ ok: true, value: { categories: [{ id: categoryId, name: 'Client A' }], tags: [{ id: '88888888-8888-4888-8888-888888888888', name: 'Planning', categoryId, color: '#85858e', count: 1 }] } }) })
+test('Inbox chooses one subcategory and independent tags when filing', async () => {
+  const categoryId='77777777-7777-4777-8777-777777777777',subcategoryId='88888888-8888-4888-8888-888888888888'
+  const app=setup({taxonomy:async()=>({ok:true,value:{categories:[{id:categoryId,name:'Client A'}],subcategories:[{id:subcategoryId,name:'Planning',categoryId,color:'#85858e',count:1}],tags:[{id:noteId,name:'Waiting',categoryId:null,color:'#85858e',count:1}]}})})
   let classified
-  app.api.planner.classify = async (input) => { classified = input; return { ok: true, value: undefined } }
+  app.api.planner.classify=async input=>{classified=input;return {ok:true,value:undefined}}
   try {
-    fireEvent.click(within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('button', { name: /^Inbox/ }))
-    const categorySelect = await screen.findByRole('combobox', { name: 'Category for item' })
-    fireEvent.change(categorySelect, { target: { value: categoryId } })
-    assert.equal(screen.getByRole('button', { name: 'Edit tags' }).getAttribute('aria-expanded'), 'true')
-    fireEvent.click(await screen.findByRole('button', { name: 'Planning', pressed: false }))
-    fireEvent.click(screen.getByRole('button', { name: 'To-do' }))
-    await waitFor(() => assert.deepEqual(classified, { id: captureId, kind: 'task', tags: ['Planning'], categoryId }))
-  } finally { app.unmount() }
+    fireEvent.click(within(screen.getByRole('navigation',{name:'Main navigation'})).getByRole('button',{name:/^Inbox/}))
+    fireEvent.change(await screen.findByRole('combobox',{name:'Item category'}),{target:{value:categoryId}})
+    fireEvent.change(screen.getByRole('combobox',{name:'Item subcategory'}),{target:{value:subcategoryId}})
+    fireEvent.click(screen.getByRole('button',{name:'Edit tags'}))
+    const input=screen.getByRole('combobox',{name:'Add a tag'})
+    fireEvent.change(input,{target:{value:'Waiting'}});fireEvent.keyDown(input,{key:'Enter'})
+    fireEvent.click(screen.getByRole('button',{name:'To-do'}))
+    await waitFor(()=>assert.deepEqual(classified,{id:captureId,kind:'task',tags:['Waiting'],categoryId,subcategoryId}))
+  }finally{app.unmount()}
 })
 
-test('category view includes an untagged item under No tag', async () => {
+test('category view includes direct items under No subcategory', async () => {
   const categoryId = '77777777-7777-4777-8777-777777777777'
   const app = setup({ taxonomy: async () => ({ ok: true, value: { categories: [{ id: categoryId, name: 'Client A' }], tags: [] } }) })
   app.api.notes.list = async (filter) => ({ ok: true, value: { items: filter.categoryId === categoryId ? [makeNote(noteId, 'Untagged reference', 'note', categoryId)] : [], nextCursor: null, total: filter.categoryId === categoryId ? 1 : 0 } })
   try {
     fireEvent.click(await screen.findByRole('button', { name: 'Client A' }))
     await screen.findByRole('button', { name: 'Open note Untagged reference' })
-    assert.ok(screen.getByText('No tag'))
+    assert.ok(screen.getByText('No subcategory',{selector:'div'}))
     assert.ok(screen.getByRole('heading', { name: /Client A/ }))
   } finally { app.unmount() }
+})
+
+test('sidebar category and tag deletion requires confirmation and returns to a valid view', async () => {
+  const categoryId = '77777777-7777-4777-8777-777777777777'
+  const tagId = '88888888-8888-4888-8888-888888888888'
+  let taxonomy = { categories: [{ id: categoryId, name: 'Client A' }], tags: [{ id: tagId, name: 'Planning', categoryId, color: '#85858e', count: 1 }] }
+  let deletedCategory, deletedTag, approve = false
+  const confirmations = []
+  const originalConfirm = window.confirm
+  window.confirm = (message) => { confirmations.push(message); return approve }
+  const app = setup({ taxonomy: async () => ({ ok: true, value: taxonomy }) })
+  app.api.notes.deleteCategory = async (id) => { deletedCategory = id; taxonomy = { categories: [], tags: taxonomy.tags.map((tag) => ({ ...tag, categoryId: null })) }; return { ok: true, value: undefined } }
+  app.api.notes.deleteTag = async (id) => { deletedTag = id; taxonomy = { ...taxonomy, tags: taxonomy.tags.filter((tag) => tag.id !== id) }; return { ok: true, value: undefined } }
+  try {
+    fireEvent.click(await screen.findByRole('button', { name: 'Client A' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete category Client A' }))
+    assert.equal(deletedCategory, undefined)
+    assert.match(confirmations.at(-1), /Items become unassigned.*tags and images are preserved/i)
+
+    approve = true
+    fireEvent.click(screen.getByRole('button', { name: 'Delete category Client A' }))
+    await waitFor(() => assert.equal(deletedCategory, categoryId))
+    await screen.findByRole('heading', { name: /All items/ })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete tag Planning' }))
+    await waitFor(() => assert.equal(deletedTag, tagId))
+    assert.match(confirmations.at(-1), /from all items/i)
+  } finally { window.confirm = originalConfirm; app.unmount() }
 })
 
 test('opening an Inbox capture keeps its detail editor selected while the note list changes', async () => {
@@ -222,22 +344,124 @@ test('global note shortcuts do not intercept Enter in Inbox or Calenban controls
     assert.deepEqual(getCalls, [])
 
     app.changeView('calenban')
-    const addMeeting = await screen.findByRole('button', { name: 'Add meeting' })
+    const addMeeting = (await screen.findAllByRole('button', { name: /^Add meeting on / }))[0]
     fireEvent.keyDown(addMeeting, { key: 'Enter' })
     assert.deepEqual(getCalls, [])
   } finally { app.unmount() }
 })
 
-test('Calenban switches between day, three-day, and full-week columns', async () => {
+test('Calendar switches between Day, 3 days, and Monday–Friday Workweek', async () => {
   const app = setup()
   try {
-    fireEvent.click(screen.getByRole('button', { name: 'Plan' }))
-    await screen.findByRole('button', { name: 'Week' })
-    assert.equal(document.querySelectorAll('.reui-kanban-column').length, 3)
-    fireEvent.click(screen.getByRole('button', { name: 'Week' }))
-    await waitFor(() => assert.equal(document.querySelectorAll('.reui-kanban-column').length, 7))
+    fireEvent.click(screen.getByRole('button', { name: 'Calendar' }))
+    await screen.findByRole('button', { name: 'Workweek' })
+    assert.equal(document.querySelectorAll('[data-slot="event-calendar-day-column"]').length, 3)
+    fireEvent.click(screen.getByRole('button', { name: 'Workweek' }))
+    await waitFor(() => assert.equal(document.querySelectorAll('[data-slot="event-calendar-day-column"]').length, 5))
     fireEvent.click(screen.getByRole('button', { name: 'Day', exact: true }))
-    await waitFor(() => assert.equal(document.querySelectorAll('.reui-kanban-column').length, 1))
+    await waitFor(() => assert.equal(document.querySelectorAll('[data-slot="event-calendar-day-column"]').length, 1))
+  } finally { app.unmount() }
+})
+
+test('Workweek advances seven days and quarter-hour display settings reach the grid', async () => {
+  const app = setup({ calendarHours: { calendarStartMinute: 495, calendarEndMinute: 1005 } })
+  try {
+    app.changeView('calenban')
+    fireEvent.click(await screen.findByRole('button', { name: 'Workweek' }))
+    const column = document.querySelector('[data-slot="event-calendar-day-column"]')
+    const day = Number(column.dataset.ecDay)
+    assert.equal(new Date(day).getDay(), 1)
+    await waitFor(() => assert.equal(column.dataset.ecBoundsStart, '495'))
+    assert.equal(column.dataset.ecBoundsEnd, '1005')
+    fireEvent.click(screen.getByRole('button', { name: 'Next calendar period' }))
+    await waitFor(() => { const next = new Date(Number(document.querySelector('[data-slot="event-calendar-day-column"]').dataset.ecDay)); const expected = new Date(day); expected.setDate(expected.getDate() + 7); assert.equal(next.getTime(), expected.getTime()) })
+    fireEvent.click(screen.getByRole('button', { name: 'Show full day' }))
+    assert.equal(document.querySelector('[data-slot="event-calendar-day-column"]').dataset.ecBoundsStart, '0')
+    assert.equal(document.querySelector('[data-slot="event-calendar-day-column"]').dataset.ecBoundsEnd, '1440')
+  } finally { app.unmount() }
+})
+
+test('creating a task from the calendar submits a real timed task', async () => {
+  const app = setup()
+  let created
+  app.api.planner.createTask = async (input) => { created = input; return { ok: true, value: { ...makeNote(noteId, input.body, 'task'), ...input } } }
+  try {
+    app.changeView('calenban')
+    const dayColumn = await waitFor(() => {
+      const column = document.querySelector('[data-slot="event-calendar-day-column"]')
+      assert.ok(column)
+      return column
+    })
+    dayColumn.getBoundingClientRect = () => ({ top: 0, bottom: 600, left: 0, right: 200, width: 200, height: 600, x: 0, y: 0, toJSON() {} })
+    fireEvent.click(dayColumn, { clientY: 150 })
+    const meetingDialog = await screen.findByRole('dialog', { name: 'Add a meeting' })
+    fireEvent.click(within(meetingDialog).getByRole('button', { name: 'Task', exact: true }))
+    const dialog = within(screen.getByRole('dialog', { name: 'Add a task' }))
+    fireEvent.change(dialog.getByLabelText('Task'), { target: { value: 'Time for focused work' } })
+    fireEvent.change(dialog.getByLabelText('Starts'), { target: { value: '2026-10-01T10:15' } })
+    fireEvent.change(dialog.getByLabelText('Ends'), { target: { value: '2026-10-01T11:00' } })
+    fireEvent.click(dialog.getByRole('button', { name: 'Add task' }))
+    await waitFor(() => assert.equal(created.body, 'Time for focused work'))
+    assert.equal(created.placement.kind, 'timed')
+    assert.equal(created.placement.endAt - created.placement.startAt, 45 * 60_000)
+    await waitFor(() => assert.equal(screen.queryByRole('dialog', { name: 'Add a task' }), null))
+  } finally { app.unmount() }
+})
+
+test('calendar mutations keep pending changes until refresh and revert rejected writes without duplicate saves', async () => {
+  const task = { ...makeNote(noteId, 'Review', 'task'), completedAt: null, plannedDate: null, plannedStartAt: null, plannedEndAt: null, ready: true, beforeEventId: null, position: 0, priorityPosition: 0 }
+  let finish, refreshFinish, calls = 0
+  window.notiert = { planner: { scheduleTask: () => { calls++; return new Promise((resolve) => { finish = resolve }) } } }
+  const hook = renderHook(() => useCalendarMutations(() => new Promise((resolve) => { refreshFinish = resolve })))
+  const placement = { kind: 'timed', startAt: new Date('2026-10-01T10:00').getTime(), endAt: new Date('2026-10-01T10:30').getTime() }
+  let work
+  try {
+    act(() => { work = hook.result.current.schedule(task, placement) })
+    assert.equal(hook.result.current.overrides[`task:${noteId}`].start.getTime(), placement.startAt)
+    await act(async () => { assert.equal(await hook.result.current.schedule(task, placement), false) })
+    assert.equal(calls, 1)
+    await act(async () => { finish({ ok: false, message: 'Rejected stale task' }); await Promise.resolve() })
+    assert.match(hook.result.current.error, /Rejected/)
+    assert.equal(hook.result.current.pending.length, 1)
+    await act(async () => { refreshFinish(); assert.equal(await work, false) })
+    assert.deepEqual(hook.result.current.overrides, {})
+  } finally { hook.unmount() }
+})
+
+test('late planner refresh cannot replace the currently selected date range', async () => {
+  const requests = []
+  window.notiert = { planner: { tasks: (from, to) => { const request = { from, to }; requests.push(request); return new Promise((resolve) => { request.resolve = resolve }) }, onChanged: () => () => {} } }
+  const hook = renderHook(({ from, to }) => usePlannerData(from, to), { initialProps: { from: '2026-10-01', to: '2026-10-03' } })
+  const oldRefresh = hook.result.current.refresh
+  try {
+    hook.rerender({ from: '2026-10-05', to: '2026-10-09' })
+    assert.equal(requests.length, 2)
+    await act(async () => { requests[1].resolve({ ok: true, value: { tasks: [], events: [], tags: ['current'] } }); await Promise.resolve() })
+    await act(async () => { requests[0].resolve({ ok: true, value: { tasks: [], events: [], tags: ['old'] } }); await oldRefresh() })
+    assert.deepEqual(hook.result.current.tags, ['current'])
+    assert.equal(requests.length, 2)
+  } finally { hook.unmount() }
+})
+
+test('Calendar settings validate the pair and save precise visible hours', async () => {
+  localStorage.clear()
+  delete require.cache[require.resolve(path.join(generated, 'browserPreview.cjs'))]
+  require(path.join(generated, 'browserPreview.cjs'))
+  const app = render(React.createElement(NotesApp))
+  try {
+    fireEvent.click(within(document.querySelector('.sidebar')).getByRole('button', { name: 'Settings' }))
+    fireEvent.click(within(document.querySelector('.settings-nav')).getByRole('button', { name: 'Calendar' }))
+    const start = screen.getByRole('combobox', { name: 'Calendar start time' })
+    const end = screen.getByRole('combobox', { name: 'Calendar end time' })
+    await waitFor(() => assert.equal(screen.getByRole('button', { name: 'Save calendar hours' }).disabled, false))
+    fireEvent.change(start, { target: { value: end.value } })
+    assert.equal(screen.getByRole('button', { name: 'Save calendar hours' }).disabled, true)
+    fireEvent.change(start, { target: { value: '495' } })
+    fireEvent.change(end, { target: { value: '1440' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save calendar hours' }))
+    await screen.findByText('Calendar hours saved.')
+    const saved = await window.notiert.settings.get()
+    assert.equal(saved.value.calendarStartMinute, 495); assert.equal(saved.value.calendarEndMinute, 1440)
   } finally { app.unmount() }
 })
 
@@ -298,8 +522,9 @@ test('deleting a meeting offers Undo and restores the saved snapshot', async () 
   app.api.planner.deleteEvent = async () => ({ ok: true, value: snapshot })
   app.api.planner.undoDeleteEvent = async (value) => { restored = value; return { ok: true, value: undefined } }
   try {
-    fireEvent.click(screen.getByRole('button', { name: 'Plan' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Remove meeting' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Calendar' }))
+    fireEvent.click(await screen.findByRole('button', { name: /^Review,/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete', exact: true }))
     fireEvent.click(await screen.findByRole('button', { name: 'Undo' }))
     await waitFor(() => assert.deepEqual(restored, snapshot))
   } finally { app.unmount() }
@@ -308,23 +533,188 @@ test('deleting a meeting offers Undo and restores the saved snapshot', async () 
 
 test('meeting editor submits weekly recurrence and removed sidebar and calendar copy stays absent', async () => {
   const app = setup()
-  let saved
-  app.api.planner.createEvent = async (input) => { saved = input; return { ok: true, value: { id: noteId, ...input } } }
+  let created, saved, events = []
+  app.api.planner.tasks = async () => ({ ok: true, value: { tasks: [], events, tags: [] } })
+  app.api.planner.createEvent = async (input) => { created = input; const event = { id: noteId, ...input }; events = [event]; return { ok: true, value: event } }
+  app.api.planner.updateEvent = async (input) => { saved = input; events = [{ id: noteId, ...input }]; return { ok: true, value: events[0] } }
   try {
     assert.equal(screen.queryByText('Local by design'), null)
-    fireEvent.click(screen.getByRole('button', { name: 'Plan' }))
-    await screen.findByRole('heading', { name: 'Plan' })
+    fireEvent.click(screen.getByRole('button', { name: 'Calendar' }))
+    await screen.findByRole('heading', { name: 'Calendar' })
     assert.equal(screen.queryByText(/Your calendar is clear/), null)
     assert.equal(screen.queryByText(/Outlook connection is not configured/), null)
-    fireEvent.click(screen.getByRole('button', { name: 'Add meeting', exact: true }))
-    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Weekly review' } })
-    fireEvent.change(screen.getByLabelText('Starts'), { target: { value: '2026-10-05T09:00' } })
-    fireEvent.change(screen.getByLabelText('Ends'), { target: { value: '2026-10-05T10:00' } })
-    fireEvent.change(screen.getByLabelText('Repeat'), { target: { value: 'weekly' } })
-    fireEvent.change(screen.getByLabelText('Until'), { target: { value: '2026-10-19' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save meeting' }))
+    fireEvent.click((await screen.findAllByRole('button', { name: /^Add meeting on / }))[0])
+    assert.equal(created.title, 'New meeting')
+    fireEvent.click(await screen.findByRole('button', { name: /^New meeting,/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'Edit meeting' })
+    fireEvent.change(within(dialog).getByLabelText('Title'), { target: { value: 'Weekly review' } })
+    fireEvent.change(within(dialog).getByLabelText('Starts'), { target: { value: '2026-10-05T09:00' } })
+    fireEvent.change(within(dialog).getByLabelText('Ends'), { target: { value: '2026-10-05T10:00' } })
+    fireEvent.change(within(dialog).getByLabelText('Repeat'), { target: { value: 'weekly' } })
+    fireEvent.change(within(dialog).getByLabelText('Until'), { target: { value: '2026-10-19' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save meeting' }))
     await waitFor(() => assert.deepEqual(saved.recurrence, { frequency: 'weekly', until: '2026-10-19' }))
     assert.equal(saved.title, 'Weekly review')
     await waitFor(() => assert.equal(screen.queryByRole('dialog', { name: 'Add a meeting' }), null))
   } finally { app.unmount() }
+})
+
+
+test('screenshots paste into note edits, discard safely, and save with text', async () => {
+  global.FileReader = dom.window.FileReader
+  const app = setup()
+  let saved
+  app.api.notes.updateItem = async input => { saved = input; return { ok: true, value: { ...makeNote(noteId, input.body, 'note'), images: input.images, revision: 2 } } }
+  const file = new dom.window.File([new Uint8Array([137,80,78,71])], 'snip.png', { type: 'image/png' })
+  const paste = () => fireEvent.paste(screen.getByRole('textbox', { name: 'Edit item' }), { clipboardData: { items: [{ kind: 'file', type: 'image/png', getAsFile: () => file }] } })
+  try {
+    fireEvent.click(await screen.findByRole('button', { name: /Open note Existing note/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit item' }))
+    paste()
+    await screen.findByRole('button', { name: 'Remove image 1' })
+    assert.equal(screen.getByRole('button', { name: /Images/ }).getAttribute('aria-expanded'), 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel', exact: true }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard', exact: true }))
+    assert.equal(saved, undefined)
+    assert.equal(screen.queryByRole('button', { name: /Images/ }), null)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit item' }))
+    paste()
+    await screen.findByRole('button', { name: 'Remove image 1' })
+    fireEvent.change(screen.getByRole('textbox', { name: 'Edit item' }), { target: { value: 'Screenshot context' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save', exact: true }))
+    await waitFor(() => assert.equal(saved?.images.length, 1))
+    assert.equal(saved.body, 'Screenshot context')
+    assert.ok(saved.images[0].dataUrl.startsWith('data:image/png;base64,'))
+  } finally { app.unmount(); delete global.FileReader }
+})
+
+
+test('subcategory navigation filters by ID and editor category changes preserve independent tags', async () => {
+  const categoryId='77777777-7777-4777-8777-777777777777',otherCategory='66666666-6666-4666-8666-666666666666',subcategoryId='88888888-8888-4888-8888-888888888888'
+  const item={...makeNote(noteId,'Organized note','note',categoryId),subcategoryId,tags:['Waiting','Follow-up']}
+  const filters=[];let saved
+  const app=setup({taxonomy:async()=>({ok:true,value:{categories:[{id:categoryId,name:'Work'},{id:otherCategory,name:'Personal'}],subcategories:[{id:subcategoryId,name:'Project Alpha',categoryId,color:'#85858e',count:1}],tags:[]}}),notesApi:{get:async()=>({ok:true,value:item}),list:async filter=>{filters.push(filter);return {ok:true,value:{items:[item],nextCursor:null,total:1}}},updateItem:async input=>{saved=input;return {ok:true,value:{...item,...input,revision:2}}}}})
+  try {
+    fireEvent.click(await screen.findByRole('button',{name:/^Project Alpha/}))
+    await waitFor(()=>assert.ok(filters.some(filter=>filter.subcategoryId===subcategoryId&&filter.categoryId===categoryId)))
+    fireEvent.click(await screen.findByRole('button',{name:/Open note Organized note/}))
+    fireEvent.click(await screen.findByRole('button',{name:'Edit item'}))
+    assert.equal(screen.getByRole('combobox',{name:'Item subcategory'}).value,subcategoryId)
+    fireEvent.change(screen.getByRole('combobox',{name:'Item category'}),{target:{value:otherCategory}})
+    assert.equal(screen.getByRole('combobox',{name:'Item subcategory'}).value,'')
+    fireEvent.click(screen.getByRole('button',{name:'Save',exact:true}))
+    await waitFor(()=>assert.equal(saved?.subcategoryId,null))
+    assert.equal(saved.categoryId,otherCategory)
+    assert.deepEqual(saved.tags,['Waiting','Follow-up'])
+  }finally{app.unmount()}
+})
+
+test('migration review supports explicit empty assignment and keeps Trash separate', async () => {
+  const categoryId='77777777-7777-4777-8777-777777777777',subcategoryId='88888888-8888-4888-8888-888888888888'
+  let resolved
+  const app=setup({taxonomy:async()=>({ok:true,value:{categories:[{id:categoryId,name:'Work'}],subcategories:[{id:subcategoryId,name:'Project',categoryId,color:'#85858e',count:1}],tags:[]}}),notesApi:{migrationReview:async()=>({ok:true,value:[{noteId,reason:'multiple-matching-subcategories',candidates:[subcategoryId]},{noteId:captureId,reason:'foreign-category-labels',candidates:[subcategoryId]}]}),get:async id=>({ok:true,value:{...makeNote(id,id===noteId?'Ambiguous note':'Deleted note','note',categoryId),deletedAt:id===captureId?1:null}}),resolveMigrationReview:async input=>{resolved=input;return {ok:true,value:undefined}}}})
+  try {
+    fireEvent.click(await screen.findByRole('button',{name:/Review subcategories/}))
+    await screen.findByRole('button',{name:'Ambiguous note'})
+    assert.equal(screen.queryByRole('button',{name:/Deleted note/}),null)
+    fireEvent.click(screen.getByRole('checkbox',{name:'Include Trash'}))
+    await screen.findByRole('button',{name:/Deleted note/})
+    fireEvent.click(screen.getByRole('button',{name:'Keep without subcategory'}))
+    await waitFor(()=>assert.equal(resolved?.subcategoryId,null))
+    assert.equal(resolved.id,noteId)
+    assert.equal(resolved.expectedRevision,1)
+    await waitFor(()=>assert.equal(screen.queryByRole('button',{name:'Ambiguous note'}),null))
+  }finally{app.unmount()}
+})
+
+test('browser preview upgrades category-linked tags without losing ambiguous labels', async () => {
+  localStorage.clear()
+  const categoryId='77777777-7777-4777-8777-777777777777'
+  const item={...makeNote(noteId,'Old browser note','note',categoryId),tags:['Alpha','Beta']}
+  delete item.subcategoryId
+  localStorage.setItem('notiert-browser-preview',JSON.stringify({items:[item],categories:[{id:categoryId,name:'Work'}],tags:[{id:captureId,name:'Alpha',categoryId,color:'#123456',count:1},{id:'88888888-8888-4888-8888-888888888888',name:'Beta',categoryId,color:'#85858e',count:1}]}))
+  delete require.cache[require.resolve(path.join(generated,'browserPreview.cjs'))]
+  require(path.join(generated,'browserPreview.cjs'))
+  const taxonomy=(await window.notiert.notes.taxonomy()).value
+  assert.equal(taxonomy.subcategories.length,2)
+  assert.ok(taxonomy.tags.every(tag=>tag.categoryId===null))
+  const migrated=(await window.notiert.notes.get(noteId)).value
+  assert.equal(migrated.subcategoryId,null)
+  assert.deepEqual(migrated.tags,['Alpha','Beta'])
+  assert.equal((await window.notiert.notes.migrationReview()).value.length,1)
+  await window.notiert.notes.resolveMigrationReview({id:noteId,expectedRevision:1,categoryId,subcategoryId:taxonomy.subcategories[0].id})
+  assert.equal((await window.notiert.notes.migrationReview()).value.length,0)
+  delete require.cache[require.resolve(path.join(generated,'browserPreview.cjs'))]
+  require(path.join(generated,'browserPreview.cjs'))
+  assert.equal((await window.notiert.notes.taxonomy()).value.subcategories.length,2)
+  assert.equal((await window.notiert.notes.get(noteId)).value.subcategoryId,taxonomy.subcategories[0].id)
+})
+
+
+test('capture from a subcategory or tag page preselects that context in browser preview', async () => {
+  localStorage.clear();delete require.cache[require.resolve(path.join(generated,'browserPreview.cjs'))];require(path.join(generated,'browserPreview.cjs'))
+  const category=(await window.notiert.notes.createCategory('Client context')).value
+  const sub=(await window.notiert.notes.createSubcategory({name:'Project context',categoryId:category.id})).value
+  const tag=(await window.notiert.notes.createTag({name:'context-tag'})).value
+  const app=render(React.createElement(NotesApp))
+  try {
+    fireEvent.click(await screen.findByRole('button',{name:/^Project context/}))
+    fireEvent.click(document.querySelector('.capture-button'))
+    assert.equal((await screen.findByRole('combobox',{name:'Capture category'})).value,category.id)
+    assert.equal(screen.getByRole('combobox',{name:'Capture subcategory'}).value,sub.id)
+    fireEvent.change(screen.getByRole('textbox',{name:'Capture text'}),{target:{value:'Context note'}})
+    fireEvent.click(screen.getByRole('button',{name:'Save to Inbox'}))
+    await waitFor(()=>assert.ok(!screen.queryByRole('textbox',{name:'Capture text'})))
+    const inbox=(await window.notiert.planner.inbox({})).value.items.find(item=>item.body==='Context note')
+    assert.equal(inbox.subcategoryId,sub.id)
+    fireEvent.click(await screen.findByRole('button',{name:new RegExp('^'+tag.name)}))
+    fireEvent.click(document.querySelector('.capture-button'))
+    assert.equal((await screen.findByRole('combobox',{name:'Capture category'})).value,'')
+    assert.ok(screen.getByRole('button',{name:'Remove tag context-tag'}))
+  }finally{app.unmount()}
+})
+
+test('All items has one checkbox per task and bulk selection never completes it', async () => {
+  localStorage.clear();delete require.cache[require.resolve(path.join(generated,'browserPreview.cjs'))];require(path.join(generated,'browserPreview.cjs'))
+  const task=(await window.notiert.planner.createTask({body:'Select without completing',placement:{kind:'backlog'}})).value
+  const app=render(React.createElement(NotesApp))
+  try {
+    await screen.findByRole('button',{name:'Open to-do Select without completing'})
+    const row=within(document.querySelector(`[data-note-id="${task.id}"]`))
+    assert.equal(row.getAllByRole('checkbox').length,1)
+    assert.ok(row.getByRole('checkbox',{name:'Mark as done to-do: Select without completing'}))
+    fireEvent.click(screen.getByRole('button',{name:'Select items'}))
+    assert.equal(row.getAllByRole('checkbox').length,1)
+    fireEvent.click(row.getByRole('checkbox',{name:'Select item'}))
+    assert.ok(screen.getByText('1 selected'))
+    assert.equal((await window.notiert.notes.get(task.id)).value.completedAt,null)
+    fireEvent.click(screen.getByRole('button',{name:'Done selecting'}))
+    assert.ok(!screen.queryByText('1 selected'))
+    assert.ok(row.getByRole('checkbox',{name:'Mark as done to-do: Select without completing'}))
+  }finally{app.unmount()}
+})
+
+test('Backlog and Later tag popovers search, filter and clear independently of subcategories', async () => {
+  localStorage.clear();delete require.cache[require.resolve(path.join(generated,'browserPreview.cjs'))];require(path.join(generated,'browserPreview.cjs'))
+  for(const placement of ['backlog','later']) {
+    await window.notiert.planner.createTask({body:`Tagged ${placement}`,tags:['waiting'],placement:{kind:placement}})
+    await window.notiert.planner.createTask({body:`Other ${placement}`,tags:['follow-up'],placement:{kind:placement}})
+  }
+  const app=render(React.createElement(NotesApp))
+  try {
+    for(const page of ['Backlog','Later']) {
+      fireEvent.click(within(document.querySelector('.sidebar')).getByRole('button',{name:page,exact:true}))
+      const group=within(await screen.findByRole('region',{name:'Unassigned backlog'}))
+      await group.findByRole('button',{name:`Other ${page.toLowerCase()}`})
+      fireEvent.click(group.getByRole('button',{name:'Tag filter for Unassigned: All tags'}))
+      fireEvent.change(await screen.findByRole('textbox',{name:'Find tag for Unassigned'}),{target:{value:'wait'}})
+      const popup=within(document.querySelector('.tag-filter-popover'))
+      assert.ok(!popup.queryByRole('button',{name:'follow-up',exact:true}))
+      fireEvent.click(popup.getByRole('button',{name:'waiting',exact:true}))
+      await waitFor(()=>assert.ok(!group.queryByRole('button',{name:`Other ${page.toLowerCase()}`})))
+      assert.ok(group.getByRole('button',{name:`Tagged ${page.toLowerCase()}`}))
+      fireEvent.click(group.getByRole('button',{name:'Clear tag filter for Unassigned'}))
+      await group.findByRole('button',{name:`Other ${page.toLowerCase()}`})
+    }
+  }finally{app.unmount()}
 })

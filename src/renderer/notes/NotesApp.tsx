@@ -1,26 +1,29 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
-import { Archive, ArrowLeft, ArrowRight, Check, CheckCircle2, ChevronDown, CircleHelp, Copy, Download, FileText, FolderKanban, FolderOpen, GripVertical, Hash, Info, Monitor, MoreHorizontal, Palette, Plus, Search, Settings as SettingsIcon, Shield, Sun, Trash2, Undo2, X, CalendarDays } from 'lucide-react'
-import type { Category, Note, NoteFilter, NotePage, Settings, TagRecord } from '../../shared/contracts'
+import { CategoryPicker } from '../components/CategoryPicker'
+import { TaxonomyNav } from '../components/TaxonomyNav'
+import { MigrationReviewPanel } from '../components/MigrationReviewPanel'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
+import { Archive, ArrowLeft, ArrowRight, Check, CheckCircle2, ChevronDown, CircleHelp, Clock3, Copy, Download, FileText, FolderKanban, FolderOpen, GripVertical, Hash, Info, Monitor, MoreHorizontal, Palette, Plus, Search, Settings as SettingsIcon, Shield, Sun, Trash2, Undo2, X, CalendarDays } from 'lucide-react'
+import type { Category, Note, NoteFilter, NotePage, Settings, SettingsUpdate, Subcategory, TagRecord } from '../../shared/contracts'
 import { localDateBounds, toLocalISODate } from '../../shared/plannerDates'
 import { InboxView } from '../inbox/InboxView'
-import { CalenbanView } from '../calenban/CalenbanView'
+import { CalendarSettings } from '../calenban/CalendarSettings'
 import { BacklogView } from '../backlog/BacklogView'
 import { collectTags, TagEditor } from '../components/TagEditor'
-import { ItemImages } from '../components/ItemImages'
+import { useImagePaste } from '../components/useImagePaste'
+import { ImageIndicator, ItemImages } from '../components/ItemImages'
+import { resultValue } from '../apiResult'
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, type DragEndEvent, useSensor, useSensors } from '@dnd-kit/core'
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 
+const CalendarView = lazy(() => import('../calenban/CalendarView').then((module) => ({ default: module.CalendarView })))
+
 type NoteDetail = Note & { meetingTitle: string | null }
-type ViewName = 'all' | 'inbox' | 'calenban' | 'backlog' | 'trash' | 'settings' | 'tag' | 'category'
+type ViewName = 'all' | 'inbox' | 'calenban' | 'backlog' | 'later' | 'trash' | 'settings' | 'tag' | 'category' | 'review'
 type ItemKind = Note['kind']
 const itemKinds: { value: ItemKind; label: string }[] = [{ value: 'inbox', label: 'Inbox' }, { value: 'note', label: 'Notes' }, { value: 'task', label: 'To-dos' }]
 const dateOptions = [{ value: 'all', label: 'All time' }, { value: 'today', label: 'Today' }, { value: 'last7', label: 'Last 7 days' }, { value: 'custom', label: 'Custom' }]
 const kindLabel = (kind: ItemKind) => itemKinds.find((item) => item.value === kind)?.label ?? kind
-const resultValue = <T,>(result: { ok: true; value: T } | { ok: false; message: string }): T => {
-  if (!result.ok) throw new Error(result.message)
-  return result.value
-}
 const isTextEntry = (element: EventTarget | null) => element instanceof HTMLElement && (element.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName))
 const todayISO = () => toLocalISODate(new Date())
 const startOfLocalDay = (iso: string) => localDateBounds(iso).start
@@ -51,24 +54,28 @@ export function NotesApp() {
   const [showCompleted, setShowCompleted] = useState(false)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [tagSearch, setTagSearch] = useState('')
-  const activeFilterCount = kindFilters.length + tagFilters.length + (dateRange === 'all' ? 0 : 1)
-  const [availableTags, setAvailableTags] = useState<string[]>([])
+  const [subcategoryFilter,setSubcategoryFilter]=useState('')
+  const activeFilterCount = kindFilters.length + tagFilters.length + (subcategoryFilter?1:0) + (dateRange === 'all' ? 0 : 1)
   const [categories, setCategories] = useState<Category[]>([])
+  const [subcategories,setSubcategories]=useState<Subcategory[]>([])
+  const [selectedSubcategoryId,setSelectedSubcategoryId]=useState<string|null>(null)
+  const [noSubcategory,setNoSubcategory]=useState(false)
+  const [editSubcategoryId,setEditSubcategoryId]=useState<string|null>(null)
+  const [taxonomyLoaded,setTaxonomyLoaded]=useState(false)
+  const [upgradeNotice,setUpgradeNotice]=useState(false)
+  const [reviewCount,setReviewCount]=useState(0)
   const [tagRecords, setTagRecords] = useState<TagRecord[]>([])
+  const availableTags = useMemo(() => tagRecords.map((tag) => tag.name), [tagRecords])
   const [selectedTagId, setSelectedTagId] = useState<string | null>(null)
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null)
-  const [categoriesOpen, setCategoriesOpen] = useState(true)
-  const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({})
-  const [newCategory, setNewCategory] = useState(false)
-  const [categoryDraft, setCategoryDraft] = useState('')
-  const [addingTagTo, setAddingTagTo] = useState<string | null>(null)
-  const [tagNameDraft, setTagNameDraft] = useState('')
   const [customFrom, setCustomFrom] = useState(todayISO())
   const [customTo, setCustomTo] = useState(todayISO())
   const [detailId, setDetailId] = useState<string | null>(null)
   const [focusedId, setFocusedId] = useState<string | null>(null)
   const [detail, setDetail] = useState<NoteDetail | null>(null)
   const [selected, setSelected] = useState<string[]>([])
+  const [selectionMode, setSelectionMode] = useState(false)
+  useEffect(() => { setSelectionMode(false); setSelected([]) }, [view, selectedCategoryId, selectedTagId, selectedSubcategoryId])
   const [settings, setSettings] = useState<Settings | null>(null)
   const [displays, setDisplays] = useState<{ id: number; label: string; primary: boolean }[]>([])
   const [editText, setEditText] = useState('')
@@ -80,10 +87,19 @@ export function NotesApp() {
   const pendingEditorAction = useRef<(() => void) | null>(null)
   const requestLeaveRef = useRef<(action: () => void) => void>(() => {})
   const [loading, setLoading] = useState(true)
+  const notesRequest = useRef(0)
+  const taxonomyRequest = useRef(0)
+  const detailRequest = useRef(0)
+  const activeDetailId = useRef(detailId)
+  activeDetailId.current = detailId
   const [error, setError] = useState('')
   const [toast, setToast] = useState('')
+  const imageEdit = useImagePaste(setError)
   const [browserCaptureOpen, setBrowserCaptureOpen] = useState(false)
   const [browserCaptureText, setBrowserCaptureText] = useState('')
+  const [browserCaptureTags,setBrowserCaptureTags]=useState<string[]>([])
+  const [browserCaptureTagDraft,setBrowserCaptureTagDraft]=useState('')
+  const [browserCaptureSubcategoryId,setBrowserCaptureSubcategoryId]=useState<string|null>(null)
   const [browserCaptureCategoryId, setBrowserCaptureCategoryId] = useState<string | null>(null)
   const [recordingShortcut, setRecordingShortcut] = useState(false)
   const [updateStatus, setUpdateStatus] = useState<{ status: string; version?: string }>({ status: 'idle' })
@@ -111,30 +127,45 @@ export function NotesApp() {
     try { setInboxCount(resultValue(await window.notiert.planner.inboxCount())) } catch { /* the Inbox view reports its own load error */ }
   }, [])
   const loadTags = useCallback(async () => {
-    try { const data = resultValue(await window.notiert.notes.taxonomy()); setCategories(data.categories); setTagRecords(data.tags); setAvailableTags(data.tags.map((tag) => tag.name)) } catch { /* Older test fixtures may omit taxonomy. */ }
+    if(window.notiert.notes.migrationStatus)void window.notiert.notes.migrationStatus().then(result=>{if(result.ok)setUpgradeNotice(result.value.upgraded&&!result.value.acknowledged)}).catch(()=>{})
+    if(window.notiert.notes.migrationReview) void window.notiert.notes.migrationReview().then(result=>{if(result.ok)setReviewCount(result.value.length)}).catch(()=>{})
+    const request = ++taxonomyRequest.current
+    try {
+      const data = resultValue(await window.notiert.notes.taxonomy())
+      if (request !== taxonomyRequest.current) return
+      setTaxonomyLoaded(true);setCategories(data.categories);setSubcategories(data.subcategories??[]); setTagRecords(data.tags)
+    } catch (reason) {
+      if (request === taxonomyRequest.current) setError(reason instanceof Error ? reason.message : 'Categories and tags could not be loaded.')
+    }
   }, [])
 
+  const selectedTagName = tagRecords.find((tag) => tag.id === selectedTagId)?.name
   const filter = useMemo<NoteFilter>(() => {
     let dateFrom: number | undefined, dateTo: number | undefined
     if (dateRange === 'today') { const today = todayISO(); dateFrom = startOfLocalDay(today); dateTo = endOfLocalDay(today) }
     if (dateRange === 'last7') { dateFrom = sixDaysAgo(); dateTo = endOfLocalDay(todayISO()) }
     if (dateRange === 'custom') { dateFrom = startOfLocalDay(customFrom); dateTo = endOfLocalDay(customTo) }
     const scope = view === 'trash' ? 'trash' : 'notes'
-    const selectedTag = tagRecords.find((tag) => tag.id === selectedTagId)
-    return { query: debouncedQuery, scope, dateFrom, dateTo, categoryId: view === 'category' ? selectedCategoryId ?? undefined : undefined, kinds: kindFilters.length ? kindFilters : undefined, tags: view === 'tag' ? [selectedTag?.name ?? '__missing_tag__'] : tagFilters.length ? tagFilters : undefined, includeCompleted: scope === 'notes' && showCompleted, limit: 50, sort: view === 'tag' || view === 'category' ? 'priority' : 'newest' }
-  }, [dateRange, customFrom, customTo, debouncedQuery, kindFilters, tagFilters, tagRecords, selectedTagId, selectedCategoryId, showCompleted, view])
+    return { subcategoryId:subcategoryFilter&&subcategoryFilter!=='none'?subcategoryFilter:view==='category'?selectedSubcategoryId??undefined:undefined,noSubcategory:subcategoryFilter==='none'||view==='category'&&noSubcategory, query: debouncedQuery, scope, dateFrom, dateTo, categoryId: view === 'category' ? selectedCategoryId ?? undefined : undefined, kinds: kindFilters.length ? kindFilters : undefined, tags: view === 'tag' ? [selectedTagName ?? '__missing_tag__'] : tagFilters.length ? tagFilters : undefined, includeCompleted: scope === 'notes' && showCompleted, limit: 50, sort: view === 'tag' || view === 'category' ? 'priority' : 'newest' }
+  }, [subcategoryFilter,selectedSubcategoryId,noSubcategory,dateRange, customFrom, customTo, debouncedQuery, kindFilters, tagFilters, selectedTagName, selectedCategoryId, showCompleted, view])
+  const activeFilter = useRef(filter)
+  activeFilter.current = filter
 
   const loadNotes = useCallback(async (nextCursor?: NotePage['nextCursor'], append = false) => {
+    if (activeFilter.current !== filter) return
+    const request = ++notesRequest.current
     setLoading(true); setError('')
     try {
       const page = resultValue(await window.notiert.notes.list({ ...filter, cursor: nextCursor ?? undefined }))
+      if (request !== notesRequest.current || activeFilter.current !== filter) return
       setNotes((current) => append ? [...current, ...page.items] : page.items)
       setTotal(page.total); setCursor(page.nextCursor)
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Notes could not be loaded.') }
-    finally { setLoading(false) }
+    } catch (reason) { if (request === notesRequest.current && activeFilter.current === filter) setError(reason instanceof Error ? reason.message : 'Notes could not be loaded.') }
+    finally { if (request === notesRequest.current && activeFilter.current === filter) setLoading(false) }
   }, [filter])
 
-  useEffect(() => { void loadNotes(); setSelected([]) }, [loadNotes])
+  useEffect(() => { void loadNotes(); setSelected([]); return () => { notesRequest.current++ } }, [loadNotes])
+  useEffect(() => () => { taxonomyRequest.current++; detailRequest.current++ }, [])
   useEffect(() => { void loadSettings(); void loadInboxCount(); void loadTags() }, [loadSettings, loadInboxCount, loadTags])
   useEffect(() => window.notiert.notes.onChanged(() => { void loadNotes(); void loadTags() }), [loadNotes, loadTags])
   useEffect(() => window.notiert.planner.onChanged(() => { void loadInboxCount() }), [loadInboxCount])
@@ -143,7 +174,7 @@ export function NotesApp() {
     void window.notiert.updates.getStatus().then((result) => { if (result.ok) setUpdateStatus(result.value) })
     return window.notiert.updates.onChanged(setUpdateStatus)
   }, [])
-  useEffect(() => { const unsubscribe = window.notiert.windows.onView((next) => requestLeaveRef.current(() => { setView(next); setDetailId(null); setDetail(null); setSelected([]) })); window.notiert.windows.ready(); return unsubscribe }, [])
+  useEffect(() => { const unsubscribe = window.notiert.windows.onView((next) => requestLeaveRef.current(() => { setView(next); setDetailId(null); setDetail(null); setSelected([]); document.documentElement.dataset.windowReady = 'true' })); window.notiert.windows.ready(); return unsubscribe }, [])
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return
@@ -170,33 +201,28 @@ export function NotesApp() {
   })
 
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 2600); return () => clearTimeout(timer) }, [toast])
-  useEffect(() => { const open = () => setBrowserCaptureOpen(true); window.addEventListener('notiert:browser-capture', open); return () => window.removeEventListener('notiert:browser-capture', open) }, [])
+  useEffect(() => { const open = (event:Event) => {const context=(event as CustomEvent).detail as {categoryId:string|null;subcategoryId?:string|null;tags?:string[]}|undefined;if(context&&!browserCaptureText.trim()){setBrowserCaptureCategoryId(context.categoryId);setBrowserCaptureSubcategoryId(context.subcategoryId??null);setBrowserCaptureTags(context.tags??[])}setBrowserCaptureOpen(true)}; window.addEventListener('notiert:browser-capture', open); return () => window.removeEventListener('notiert:browser-capture', open) }, [browserCaptureText])
 
   async function submitBrowserCapture() {
     if (!browserCaptureText.trim()) return
-    try { resultValue(await window.notiert.capture.submit({ requestId: crypto.randomUUID(), generation: 0, body: browserCaptureText, categoryId: browserCaptureCategoryId })); setBrowserCaptureText(''); setBrowserCaptureCategoryId(null); setBrowserCaptureOpen(false); nav('inbox') }
+    try { resultValue(await window.notiert.capture.submit({ requestId: crypto.randomUUID(), generation: 0, body: browserCaptureText, categoryId: browserCaptureCategoryId,subcategoryId:browserCaptureSubcategoryId,tags:collectTags(browserCaptureTags,browserCaptureTagDraft) })); setBrowserCaptureText(''); setBrowserCaptureCategoryId(null);setBrowserCaptureSubcategoryId(null);setBrowserCaptureTags([]);setBrowserCaptureTagDraft(''); setBrowserCaptureOpen(false); nav('inbox') }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Capture could not be saved.') }
   }
 
   async function openNote(id: string) {
-    setDetailId(id); setEditing(false); setDiscardPrompt(false)
-    try { const record = resultValue(await window.notiert.notes.get(id)); setDetail(record); if (record) { setEditText(record.body); setEditTags(record.tags); setEditCategoryId(record.categoryId); setTagDraft('') } }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'This note could not be opened.') }
+    const request = ++detailRequest.current
+    activeDetailId.current = id
+    setDetailId(id); setDetail(null); setEditing(false); setDiscardPrompt(false)
+    try {
+      const record = resultValue(await window.notiert.notes.get(id))
+      if (request !== detailRequest.current || activeDetailId.current !== id) return
+      setDetail(record); if (record) { setEditText(record.body); setEditTags(record.tags); setEditCategoryId(record.categoryId);setEditSubcategoryId(record.subcategoryId??null); setTagDraft('') }
+    } catch (reason) { if (request === detailRequest.current && activeDetailId.current === id) setError(reason instanceof Error ? reason.message : 'This note could not be opened.') }
   }
-  function clearFilters() { setQuery(''); setDateRange('all'); setKindFilters([]); setTagFilters([]) }
-  function nav(next: ViewName) { requestLeaveRef.current(() => { setSelectedTagId(null); setSelectedCategoryId(null); setView(next); setShowCompleted(false); setDetailId(null); setFocusedId(null); setDetail(null); setSelected([]); clearFilters() }) }
-  function openTag(tag: TagRecord) { requestLeaveRef.current(() => { setSelectedTagId(tag.id); setSelectedCategoryId(null); setView('tag'); setShowCompleted(false); setDetailId(null); setDetail(null); setSelected([]); clearFilters() }) }
-  function openCategory(category: Category) { requestLeaveRef.current(() => { setSelectedCategoryId(category.id); setSelectedTagId(null); setView('category'); setShowCompleted(false); setDetailId(null); setFocusedId(null); setDetail(null); setSelected([]); clearFilters() }) }
-  async function addCategory() {
-    if (!categoryDraft.trim()) return
-    try { const category = resultValue(await window.notiert.notes.createCategory(categoryDraft)); setCategoryDraft(''); setNewCategory(false); setCategoriesOpen(true); setExpandedCategories((current) => ({ ...current, [category.id]: true })); void loadTags() }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'Category could not be added.') }
-  }
-  async function addTag(categoryId: string | null) {
-    if (!tagNameDraft.trim()) return
-    try { const tag = resultValue(await window.notiert.notes.createTag({ name: tagNameDraft, categoryId })); setTagNameDraft(''); setAddingTagTo(null); void loadTags(); openTag(tag) }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'Tag could not be added.') }
-  }
+  function clearFilters() { setQuery(''); setDateRange('all'); setKindFilters([]); setTagFilters([]);setSubcategoryFilter('') }
+  function nav(next: ViewName) { requestLeaveRef.current(() => { setSelectedSubcategoryId(null);setNoSubcategory(false); setSelectedTagId(null); setSelectedCategoryId(null); setView(next); setShowCompleted(false); setDetailId(null); setFocusedId(null); setDetail(null); setSelected([]); clearFilters() }) }
+  function openTag(tag: TagRecord) { requestLeaveRef.current(() => { setSelectedSubcategoryId(null);setNoSubcategory(false); setSelectedTagId(tag.id); setSelectedCategoryId(null); setView('tag'); setShowCompleted(false); setDetailId(null); setDetail(null); setSelected([]); clearFilters() }) }
+  function openCategory(category: Category,subcategoryId:string|null=null,directOnly=false) { requestLeaveRef.current(() => { setSelectedSubcategoryId(subcategoryId);setNoSubcategory(directOnly); setSelectedCategoryId(category.id); setSelectedTagId(null); setView('category'); setShowCompleted(false); setDetailId(null); setFocusedId(null); setDetail(null); setSelected([]); clearFilters() }) }
   async function changeTag(input: { categoryId: string | null; color: string }) {
     if (!selectedTagId) return
     try { resultValue(await window.notiert.notes.updateTag({ id: selectedTagId, ...input })); void loadTags() }
@@ -207,9 +233,9 @@ export function NotesApp() {
   function toggleKind(kind: ItemKind) { requestEditorLeave(() => setKindFilters((current) => current.includes(kind) ? current.filter((value) => value !== kind) : [...current, kind])) }
   function toggleTag(tag: string) { requestEditorLeave(() => setTagFilters((current) => current.includes(tag) ? current.filter((value) => value !== tag) : [...current, tag])) }
   async function saveEdit() {
-    if (!detail) return
+    if (!detail || imageEdit.isPending()) return
     try {
-      const updated = resultValue(await window.notiert.notes.updateItem({ id: detail.id, expectedRevision: detail.revision, body: editText, tags: collectTags(editTags, tagDraft), categoryId: editCategoryId }))
+      const updated = resultValue(await window.notiert.notes.updateItem({ id: detail.id, expectedRevision: detail.revision, body: editText, tags: collectTags(editTags, tagDraft), categoryId: editCategoryId, subcategoryId:editSubcategoryId, images: imageEdit.images }))
       setDetail(updated); setEditTags(updated.tags); setEditCategoryId(updated.categoryId); setTagDraft('')
       setEditing(false); setToast('Changes saved')
       const next = pendingEditorAction.current; pendingEditorAction.current = null; next?.()
@@ -259,7 +285,7 @@ export function NotesApp() {
   async function deleteOne(id: string) { try { resultValue(await window.notiert.notes.deletePermanently([id])); setToast('Note deleted permanently'); setDetailId(null); setDetail(null) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not delete note.') } }
   async function emptyTrash() { try { resultValue(await window.notiert.notes.emptyTrash()); setToast('Trash emptied'); setDetailId(null); setDetail(null) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not empty Trash.') } }
 
-  const saveSettings = async (update: Partial<Pick<Settings, 'shortcut' | 'shortcutEnabled' | 'launchAtLogin' | 'theme' | 'monitor' | 'captureProtection' | 'protectionTestApp' | 'protectionTestDate' | 'closeToTray' | 'firstRunComplete'>>) => {
+  const saveSettings = async (update: SettingsUpdate) => {
     try { const saved = resultValue(await window.notiert.settings.update(update)); setSettings(saved); document.documentElement.dataset.theme = saved.theme; return true }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Setting could not be saved.'); return false }
   }
@@ -273,7 +299,7 @@ export function NotesApp() {
   }
 
   const renderRows = () => {
-    const hasFilters = !!(debouncedQuery || kindFilters.length || ((view !== 'tag') && tagFilters.length) || dateRange !== 'all')
+    const hasFilters = !!(subcategoryFilter || debouncedQuery || kindFilters.length || ((view !== 'tag') && tagFilters.length) || dateRange !== 'all')
     if (!notes.length && !loading && !error) return <div className="empty-state">
       <div className="empty-mark"><FileText size={20} /></div><h2>{view === 'tag' && !hasFilters ? 'No items with this tag yet.' : view === 'category' && !hasFilters ? 'No items in this category yet.' : hasFilters ? 'No matching items.' : view === 'trash' ? 'Trash is empty.' : 'Your next thought goes here.'}</h2>
       <p>{hasFilters ? 'Try another phrase or clear the filters.' : view === 'tag' ? 'Items using this tag will appear here.' : view === 'category' ? 'Items assigned to this category will appear here, including items with no tag.' : view === 'trash' ? 'Deleted items stay here until you remove them permanently.' : `Press ${settings?.shortcut.replace('Control', 'Ctrl') ?? 'Ctrl+N'} from any app to capture an item.`}</p>
@@ -281,12 +307,11 @@ export function NotesApp() {
     </div>
     const renderRow = (note: NoteDetail, sortable?: SortableRowProps) => <article ref={sortable?.ref} style={sortable?.style} key={note.id} data-note-id={note.id} className={`note-row ${sortable ? 'priority-note-row' : ''} ${note.completedAt != null ? 'is-completed' : ''} ${detailId === note.id || focusedId === note.id ? 'is-active' : ''} ${selected.includes(note.id) ? 'is-selected' : ''}`}>
       {sortable && <button type="button" className="note-drag-handle" aria-label={`Reorder to-do ${note.body.trim() ? excerpt(note.body).slice(0, 80) : 'without a title'}`} title="Drag to change priority" {...sortable.attributes} {...sortable.listeners}><GripVertical size={14} /></button>}
-      {note.kind === 'task' && <input className="note-completion-toggle" type="checkbox" aria-label={`${note.completedAt != null ? 'Reopen' : 'Mark as done'} to-do: ${note.body.trim() ? excerpt(note.body).slice(0, 80) : 'without a title'}`} checked={note.completedAt != null} onChange={(event) => void setTaskCompleted(note.id, event.target.checked)} />}
+      {selectionMode ? <input className="row-select" type="checkbox" aria-label="Select item" checked={selected.includes(note.id)} onChange={() => toggleSelected(note.id)} /> : note.kind === 'task' && <input className="note-completion-toggle" type="checkbox" aria-label={`${note.completedAt != null ? 'Reopen' : 'Mark as done'} to-do: ${note.body.trim() ? excerpt(note.body).slice(0, 80) : 'without a title'}`} checked={note.completedAt != null} onChange={(event) => void setTaskCompleted(note.id, event.target.checked)} />}
       <button className="note-row-open" aria-label={`Open ${note.kind === 'note' ? 'note' : note.kind === 'task' ? 'to-do' : 'inbox item'} ${note.body.trim() ? excerpt(note.body).slice(0, 80) : note.images.length ? 'Image capture' : 'Empty item'}`} onClick={() => requestEditorLeave(() => void openNote(note.id))} onFocus={() => setFocusedId(note.id)}>
         <span className="note-preview">{note.body.trim() ? excerpt(note.body) : note.images.length ? 'Image capture' : 'Empty item'}</span>
-        <span className="note-meta"><time>{formatTime(view === 'trash' ? note.deletedAt ?? note.createdAt : note.createdAt)}</time><span className="note-kind-chip">{kindLabel(note.kind)}</span>{note.completedAt != null && <span className="note-completed-chip">Done</span>}{note.images.length > 0 && <span className="note-image-count">{note.images.length} {note.images.length === 1 ? 'image' : 'images'}</span>}{note.tags.map((tag) => <span className="note-tag-chip" key={tag} style={{ color: tagRecords.find((record) => record.name.toLocaleLowerCase() === tag.toLocaleLowerCase())?.color }}>{tag}</span>)}</span>
+        <span className="note-meta"><time>{formatTime(view === 'trash' ? note.deletedAt ?? note.createdAt : note.createdAt)}</time><span className="note-kind-chip">{kindLabel(note.kind)}</span>{note.completedAt != null && <span className="note-completed-chip">Done</span>}{note.later && <span className="note-completed-chip later-chip">Later</span>}{note.subcategoryId&&<span className="subcategory-label">{(view==='category'?'':(categories.find(item=>item.id===note.categoryId)?.name??'')+' / ')+subcategories.find(item=>item.id===note.subcategoryId)?.name}</span>}<ImageIndicator count={note.images.length} />{note.tags.map((tag) => <span className="note-tag-chip" key={tag} style={{ color: tagRecords.find((record) => record.name.toLocaleLowerCase() === tag.toLocaleLowerCase())?.color }}>{tag}</span>)}</span>
       </button>
-      <input className="row-select" type="checkbox" aria-label="Select item" checked={selected.includes(note.id)} onChange={() => toggleSelected(note.id)} />
     </article>
 
     if (view === 'category' || view === 'tag') {
@@ -298,11 +323,11 @@ export function NotesApp() {
       const priorityGroups = [...taskGroups.entries()].map(([categoryId, tasks]) => <PriorityTaskGroup key={categoryId} categoryId={categoryId === 'unassigned' ? null : categoryId} title={view === 'category' ? 'To-dos' : (categories.find((category) => category.id === categoryId)?.name ?? 'Unassigned')} tasks={tasks} renderRow={renderRow} onReorder={reorderTask} />)
       const completedTasks = notes.filter((note) => note.kind === 'task' && note.completedAt != null).sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0))
       const otherItems = notes.filter((note) => note.kind !== 'task')
-      const noTagItems = view === 'category' ? otherItems.filter((note) => note.tags.length === 0) : []
-      const taggedItems = view === 'category' ? otherItems.filter((note) => note.tags.length > 0) : otherItems
+      const noTagItems = view === 'category' ? otherItems.filter((note) => !note.subcategoryId) : []
+      const taggedItems = view === 'category' ? otherItems.filter((note) => !!note.subcategoryId) : otherItems
       const groupedItems = new Map<string, NoteDetail[]>()
       for (const note of taggedItems) { const label = noteDateLabel(note.createdAt); groupedItems.set(label, [...(groupedItems.get(label) ?? []), note]) }
-      return <>{priorityGroups}{completedTasks.length > 0 && <section className="completed-task-group"><div className="date-label">Completed to-dos</div>{completedTasks.map((note) => renderRow(note))}</section>}{view === 'category' && noTagItems.length > 0 && <section className="category-item-section"><div className="date-label">No tag</div>{noTagItems.map((note) => renderRow(note))}</section>}{view === 'category' && taggedItems.length > 0 && <div className="date-label category-tagged-heading">Tagged items</div>}{[...groupedItems.entries()].map(([label, items]) => <section className="date-group" key={label}><div className="date-label">{label}</div>{items.map((note) => renderRow(note))}</section>)}{cursor && <button className="load-more" onClick={() => void loadNotes(cursor, true)} disabled={loading}>Load more <ChevronDown size={14} /></button>}</>
+      return <>{priorityGroups}{completedTasks.length > 0 && <section className="completed-task-group"><div className="date-label">Completed to-dos</div>{completedTasks.map((note) => renderRow(note))}</section>}{view === 'category' && noTagItems.length > 0 && <section className="category-item-section"><div className="date-label">No subcategory</div>{noTagItems.map((note) => renderRow(note))}</section>}{view === 'category' && taggedItems.length > 0 && <div className="date-label category-tagged-heading">Items in subcategories</div>}{[...groupedItems.entries()].map(([label, items]) => <section className="date-group" key={label}><div className="date-label">{label}</div>{items.map((note) => renderRow(note))}</section>)}{cursor && <button className="load-more" onClick={() => void loadNotes(cursor, true)} disabled={loading}>Load more <ChevronDown size={14} /></button>}</>
     }
 
     const groups = new Map<string, NoteDetail[]>()
@@ -314,7 +339,14 @@ export function NotesApp() {
     return <>{rows}{cursor && <button className="load-more" onClick={() => void loadNotes(cursor, true)} disabled={loading}>Load more <ChevronDown size={14} /></button>}</>
   }
 
-  const hasEdits = !!detail && (editText !== detail.body || editCategoryId !== detail.categoryId || collectTags(editTags, tagDraft).join('\u0000') !== detail.tags.join('\u0000'))
+  useEffect(()=> {
+    if(!taxonomyLoaded)return
+    if(view==='category'&&selectedCategoryId&&!categories.some(item=>item.id===selectedCategoryId)){setView('all');setSelectedCategoryId(null);setSelectedSubcategoryId(null);setNoSubcategory(false)}
+    if(view==='tag'&&selectedTagId&&!tagRecords.some(item=>item.id===selectedTagId)){setView('all');setSelectedTagId(null)}
+    if(selectedSubcategoryId&&!subcategories.some(item=>item.id===selectedSubcategoryId))setSelectedSubcategoryId(null)
+  },[taxonomyLoaded,categories,subcategories,tagRecords,view,selectedCategoryId,selectedSubcategoryId,selectedTagId])
+
+  const hasEdits = !!detail && (imageEdit.pending || imageEdit.images.map(image => image.id).join() !== detail.images.map(image => image.id).join() || editText !== detail.body || editCategoryId !== detail.categoryId || editSubcategoryId !== (detail.subcategoryId??null) || collectTags(editTags, tagDraft).join('\u0000') !== detail.tags.join('\u0000'))
   const requestEditorLeave = (action: () => void) => {
     if (editing && hasEdits) { pendingEditorAction.current = action; setDiscardPrompt(true); return }
     action()
@@ -341,18 +373,17 @@ export function NotesApp() {
       <div className="side-label">WORKSPACE</div>
       <nav className="side-nav" aria-label="Main navigation">
         <button className={view === 'inbox' ? 'active' : ''} onClick={() => nav('inbox')}><Archive size={16} /><span>Inbox</span><span className="side-count">{inboxCount || ''}</span></button>
-        <button className={view === 'calenban' ? 'active' : ''} onClick={() => nav('calenban')}><CalendarDays size={16} /><span>Plan</span></button>
+        <button className={view === 'calenban' ? 'active' : ''} onClick={() => nav('calenban')}><CalendarDays size={16} /><span>Calendar</span></button>
         <button className={view === 'backlog' ? 'active' : ''} onClick={() => nav('backlog')}><FolderKanban size={16} /><span>Backlog</span></button>
+        <button className={view === 'later' ? 'active' : ''} onClick={() => nav('later')}><Clock3 size={16} /><span>Later</span></button>
         <button className={view === 'all' ? 'active' : ''} onClick={() => nav('all')}><FileText size={16} /><span>All items</span><span className="side-count">{view === 'all' ? total : ''}</span></button>
       </nav>
-      <div className="sidebar-categories">
-        <div className="category-section-heading"><button type="button" aria-expanded={categoriesOpen} onClick={() => setCategoriesOpen((open) => !open)}>Categories <ChevronDown size={13} className={categoriesOpen ? '' : 'is-closed'} /></button><button type="button" className="category-add" aria-label="Add category" title="Add category" onClick={() => { setCategoriesOpen(true); setNewCategory(true) }}><Plus size={15} /></button></div>
-        {categoriesOpen && <div className="category-tree">
-          {newCategory && <form className="category-inline-form" onSubmit={(event) => { event.preventDefault(); void addCategory() }}><input autoFocus aria-label="New category name" placeholder="Category name" maxLength={60} value={categoryDraft} onChange={(event) => setCategoryDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') setNewCategory(false) }} /><button aria-label="Save category" type="submit"><Check size={13} /></button></form>}
-          {categories.map((category) => { const expanded = expandedCategories[category.id] ?? true; const categoryTags = tagRecords.filter((tag) => tag.categoryId === category.id); return <div className="category-group" key={category.id}><div className={`category-row ${view === 'category' && selectedCategoryId === category.id ? 'active' : ''}`}><button type="button" className="category-expand" aria-label={`${expanded ? 'Collapse' : 'Expand'} ${category.name}`} aria-expanded={expanded} onClick={() => setExpandedCategories((current) => ({ ...current, [category.id]: !expanded }))}><ChevronDown size={13} className={expanded ? '' : 'is-closed'} /></button><button type="button" className="category-open" aria-current={view === 'category' && selectedCategoryId === category.id ? 'page' : undefined} onClick={() => openCategory(category)}>{category.name}</button><button type="button" className="category-add-tag" aria-label={`Add tag to ${category.name}`} title="Add tag" onClick={() => { setAddingTagTo(category.id); setExpandedCategories((current) => ({ ...current, [category.id]: true })) }}><Plus size={13} /></button></div>{expanded && <div className="category-children">{categoryTags.map((tag) => <button type="button" key={tag.id} className={`category-tag ${view === 'tag' && selectedTagId === tag.id ? 'active' : ''}`} onClick={() => openTag(tag)}><Hash size={14} style={{ color: tag.color }} /><span>{tag.name}</span><small>{tag.count || ''}</small></button>)}{addingTagTo === category.id && <form className="category-inline-form" onSubmit={(event) => { event.preventDefault(); void addTag(category.id) }}><input autoFocus aria-label={`New tag in ${category.name}`} placeholder="Tag name" maxLength={40} value={tagNameDraft} onChange={(event) => setTagNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') setAddingTagTo(null) }} /><button aria-label="Save tag" type="submit"><Check size={13} /></button></form>}</div>}</div> })}
-          {tagRecords.some((tag) => tag.categoryId === null) && <div className="category-group"><div className="category-row"><button type="button" className="category-toggle" aria-expanded={expandedCategories.uncategorized ?? true} onClick={() => setExpandedCategories((current) => ({ ...current, uncategorized: !(current.uncategorized ?? true) }))}><ChevronDown size={13} className={(expandedCategories.uncategorized ?? true) ? '' : 'is-closed'} /><span>Uncategorized</span></button></div>{(expandedCategories.uncategorized ?? true) && <div className="category-children">{tagRecords.filter((tag) => tag.categoryId === null).map((tag) => <button type="button" key={tag.id} className={`category-tag ${view === 'tag' && selectedTagId === tag.id ? 'active' : ''}`} onClick={() => openTag(tag)}><Hash size={14} style={{ color: tag.color }} /><span>{tag.name}</span><small>{tag.count || ''}</small></button>)}</div>}</div>}
-        </div>}
-      </div>
+      <TaxonomyNav categories={categories} subcategories={subcategories} tags={tagRecords} activeCategory={view==='category'?selectedCategoryId:null} activeSubcategory={view==='category'?selectedSubcategoryId:null} activeTag={view==='tag'?selectedTagId:null} onChanged={()=>{void loadTags();void loadNotes()}} onError={setError}
+        onCategory={category=>openCategory(category)}
+        onSubcategory={subcategory=>openCategory(categories.find(category=>category.id===subcategory.categoryId)!,subcategory.id)}
+        onNoSubcategory={category=>openCategory(category,null,true)}
+        onTag={openTag}/>
+      <nav className="side-nav"><button className={view==='review'?'active':''} onClick={()=>nav('review')}><Info size={15}/><span>Review subcategories</span><span className="side-count">{reviewCount||''}</span></button></nav>
       <nav className="side-nav" aria-label="Trash"><button className={view === 'trash' ? 'active' : ''} onClick={() => nav('trash')}><Trash2 size={16} /><span>Trash</span></button></nav>
       <div className="sidebar-spacer" />
       <div className="sidebar-bottom">
@@ -360,31 +391,36 @@ export function NotesApp() {
       </div>
     </aside>
     <main className="main-area">
+      {upgradeNotice&&view!=='review'&&<div className="taxonomy-upgrade-notice">Your existing tags were preserved. {reviewCount} items need a subcategory review. <button onClick={()=>nav('review')}>Review assignments</button><button aria-label="Dismiss taxonomy upgrade notice" onClick={()=>{void window.notiert.notes.acknowledgeMigration().then(result=>{if(result.ok)setUpgradeNotice(false)})}}>Dismiss</button></div>}
       {view === 'settings' ? <SettingsPanel settings={settings} displays={displays} saveSettings={saveSettings} onBackup={async () => { try { resultValue(await window.notiert.data.backup()); setToast('Backup created') } catch (reason) { setError(reason instanceof Error ? reason.message : 'Backup failed.') } }} onRestore={async () => { try { resultValue(await window.notiert.data.restore()); setToast('Backup restored') } catch (reason) { setError(reason instanceof Error ? reason.message : 'Restore failed.') } }} firstRun={firstRun} onFinish={finishFirstRun} onTrayOnly={continueTrayOnly} recordingShortcut={recordingShortcut} setRecordingShortcut={setRecordingShortcut} onShortcutKey={onShortcutKey} />
+      : view === 'review' ? <MigrationReviewPanel categories={categories} subcategories={subcategories} onChanged={()=>{void loadTags();void loadNotes()}} onOpen={(id,deleted)=>requestEditorLeave(()=>{setView(deleted?'trash':'all');clearFilters();void openNote(id)})}/>
       : view === 'inbox' ? <InboxView onOpen={(id) => requestEditorLeave(() => { setView('all'); setSelectedCategoryId(null); setSelectedTagId(null); setShowCompleted(false); clearFilters(); setDetailId(id); setSelected([]); void openNote(id) })} />
-      : view === 'calenban' ? <CalenbanView />
+      : view === 'calenban' ? <Suspense fallback={<div className="calenban-page" role="status">Loading calendar…</div>}><CalendarView settings={settings} /></Suspense>
       : view === 'backlog' ? <BacklogView />
+      : view === 'later' ? <BacklogView laterOnly />
       : <>
         <header className="main-header">
-          <div className="title-stack"><div className="eyebrow">{view === 'trash' ? 'ARCHIVE' : view === 'tag' || view === 'category' ? 'CATEGORY / TAG' : 'YOUR NOTES & TO-DOS'}</div><h1>{view === 'trash' ? 'Trash' : view === 'tag' ? selectedTag?.name ?? 'Tag' : view === 'category' ? selectedCategory?.name ?? 'Category' : 'All items'} <span className="title-count">{total.toLocaleString()}</span></h1></div>
+          <div className="title-stack"><div className="eyebrow">{view === 'trash' ? 'ARCHIVE' : view === 'tag' || view === 'category' ? 'CATEGORY / TAG' : 'YOUR NOTES & TO-DOS'}</div><h1>{view === 'trash' ? 'Trash' : view === 'tag' ? selectedTag?.name ?? 'Tag' : view === 'category' ? `${selectedCategory?.name??'Category'}${selectedSubcategoryId?' / '+(subcategories.find(item=>item.id===selectedSubcategoryId)?.name??'Subcategory'):noSubcategory?' / No subcategory':''}` : 'All items'} <span className="title-count">{total.toLocaleString()}</span></h1></div>
           <div className="header-actions">
             {updateStatus.status === 'available' && <button className="update-pill" onClick={() => void window.notiert.updates.check()}>Downloading update{updateStatus.version ? ` · v${updateStatus.version}` : ''}</button>}
             {updateStatus.status === 'downloaded' && <button className="update-pill is-ready" onClick={() => void window.notiert.updates.install()}>Restart to update{updateStatus.version ? ` · v${updateStatus.version}` : ''}</button>}
             {view === 'trash' && total > 0 && <button className="button secondary" onClick={() => void emptyTrash()}><Trash2 size={14} /> Empty trash</button>}
-            <button className="button secondary capture-button" onClick={() => window.notiert.windows.openCapture()}><Plus size={15} /> Capture</button>
+            <button className="button secondary capture-button" onClick={() => window.notiert.windows.openCapture({categoryId:view==='category'?selectedCategoryId:null,subcategoryId:view==='category'?selectedSubcategoryId:null,tags:view==='tag'&&selectedTag?[selectedTag.name]:[]})}><Plus size={15} /> Capture</button>
             <div className="menu-wrap"><button className="icon-button bordered" aria-label="More actions" title="More actions" onClick={(event) => { const menu = event.currentTarget.nextElementSibling; menu?.classList.toggle('is-open') }}><MoreHorizontal size={17} /></button><div className="pop-menu"><button onClick={() => void exportData('all')}><Download size={14} /> Export notes</button><button onClick={() => void exportData('full')}><Archive size={14} /> Export full archive</button><button onClick={() => void window.notiert.settings.openFolder()}><FolderOpen size={14} /> Open data folder</button></div></div>
           </div>
         </header>
-        {view === 'tag' && selectedTag && <div className="tag-page-settings"><span className="tag-page-icon" style={{ color: selectedTag.color }}><Hash size={18} /></span><div className="tag-page-description"><b>{selectedTag.name}</b><small>{total} {total === 1 ? 'item' : 'items'} with this tag</small></div><label><Palette size={14} /> Color <input type="color" aria-label={`Color for ${selectedTag.name}`} value={selectedTag.color} onChange={(event) => void changeTag({ categoryId: selectedTag.categoryId, color: event.target.value })} /></label><label>Category <select aria-label={`Category for ${selectedTag.name}`} value={selectedTag.categoryId ?? ''} onChange={(event) => void changeTag({ categoryId: event.target.value || null, color: selectedTag.color })}><option value="">Unassigned</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label></div>}
+        {view === 'tag' && selectedTag && <div className="tag-page-settings"><span className="tag-page-icon" style={{ color: selectedTag.color }}><Hash size={18} /></span><div className="tag-page-description"><b>{selectedTag.name}</b><small>{total} {total === 1 ? 'item' : 'items'} with this tag</small></div><label><Palette size={14} /> Color <input type="color" aria-label={`Color for ${selectedTag.name}`} value={selectedTag.color} onChange={(event) => void changeTag({ categoryId: selectedTag.categoryId, color: event.target.value })} /></label></div>}
         {view === 'category' && selectedCategory && <div className="tag-page-settings category-page-settings"><span className="tag-page-icon"><FolderKanban size={18} /></span><div className="tag-page-description"><b>{selectedCategory.name}</b><small>{total} {total === 1 ? 'item' : 'items'} assigned directly to this category</small></div></div>}
         <div className="toolbar">
           <label className="search-box"><Search size={15} /><input ref={searchRef} value={query} onChange={(event) => requestEditorLeave(() => setQuery(event.target.value))} placeholder="Search items…" aria-label="Search items" /><kbd>Ctrl F</kbd>{query && <button title="Clear search" onClick={() => requestEditorLeave(() => setQuery(''))}><X size={13} /></button>}</label>
           {dateRange === 'custom' && <div className="date-inputs"><input type="date" aria-label="From date" value={customFrom} onChange={(event) => requestEditorLeave(() => setCustomFrom(event.target.value))} /><span>to</span><input type="date" aria-label="To date" value={customTo} onChange={(event) => requestEditorLeave(() => setCustomTo(event.target.value))} /></div>}
           {view !== 'trash' && <button type="button" className={`button secondary small completed-toggle ${showCompleted ? 'is-active' : ''}`} aria-pressed={showCompleted} onClick={() => requestEditorLeave(() => setShowCompleted((current) => !current))}><CheckCircle2 size={14} /> Show completed</button>}
           <button className="button secondary small filter-toggle" aria-expanded={filtersOpen} aria-controls="note-filters" onClick={() => setFiltersOpen(!filtersOpen)}>Filters{activeFilterCount > 0 && <span className="filter-count">{activeFilterCount}</span>}<ChevronDown size={13} /></button>
+          <button type="button" className="button secondary small" aria-pressed={selectionMode} onClick={() => { setSelectionMode(!selectionMode); setSelected([]) }}>{selectionMode ? 'Done selecting' : 'Select items'}</button>
           <span className="result-count">{total.toLocaleString()} {total === 1 ? 'item' : 'items'}</span>
         </div>
         {filtersOpen && <div id="note-filters" className="filter-panel" aria-label="Filters">
+          <div className="filter-row"><span className="filter-heading">SUBCATEGORY</span><select aria-label="Subcategory filter" value={subcategoryFilter} onChange={event=>requestEditorLeave(()=>setSubcategoryFilter(event.target.value))}><option value="">All subcategories</option><option value="none">No subcategory</option>{subcategories.filter(item=>view!=='category'||item.categoryId===selectedCategoryId).map(item=><option key={item.id} value={item.id}>{categories.find(category=>category.id===item.categoryId)?.name} / {item.name}</option>)}</select></div>
           <div className="filter-row"><span className="filter-heading">TYPE</span><div className="filter-pills" aria-label="Type filters">{itemKinds.map(({ value, label }) => <button key={value} className={`filter-pill ${kindFilters.includes(value) ? 'is-selected' : ''}`} aria-pressed={kindFilters.includes(value)} onClick={() => toggleKind(value)}>{label}</button>)}</div></div>
           {view !== 'tag' && <div className="filter-row"><span className="filter-heading">TAGS</span><div className="tag-filter-options"><input className="tag-filter-search" aria-label="Find a tag filter" placeholder="Find a tag…" value={tagSearch} onChange={(event) => setTagSearch(event.target.value)} /><div className="filter-pills" aria-label="Tag filters">{availableTags.filter((tag) => tag.toLocaleLowerCase().includes(tagSearch.toLocaleLowerCase())).map((tag) => <button key={tag} className={`filter-pill ${tagFilters.includes(tag) ? 'is-selected' : ''}`} aria-pressed={tagFilters.includes(tag)} onClick={() => toggleTag(tag)}><Hash size={11} style={{ color: tagRecords.find((record) => record.name === tag)?.color }} />{tag}</button>)}{!availableTags.some((tag) => tag.toLocaleLowerCase().includes(tagSearch.toLocaleLowerCase())) && <span className="filter-hint">{availableTags.length ? 'No matching tags' : 'No tags yet'}</span>}</div></div></div>}
           <div className="filter-row"><span className="filter-heading">DATE</span><div className="filter-pills" aria-label="Date filters">{dateOptions.map(({ value, label }) => <button key={value} className={`filter-pill ${dateRange === value ? 'is-selected' : ''}`} aria-pressed={dateRange === value} onClick={() => requestEditorLeave(() => setDateRange(value))}>{label}</button>)}</div><button className="filter-clear" onClick={() => requestEditorLeave(clearFilters)} disabled={!query && !kindFilters.length && !tagFilters.length && dateRange === 'all'}>Clear all</button></div>
@@ -399,23 +435,24 @@ export function NotesApp() {
             <div className="detail-top"><button className="back-button" onClick={() => requestEditorLeave(() => { setDetailId(null); setDetail(null) })}><ArrowLeft size={15} /> <span>Back</span></button><div className="detail-actions">{!editing ? <><button className="icon-button" title="Copy note" aria-label="Copy note" onClick={() => void copyIds([detailId])}><Copy size={15} /></button>{view === 'trash' ? <><button className="icon-button" title="Restore note" aria-label="Restore note" onClick={() => void restoreOne(detailId)}><Undo2 size={15} /></button><button className="icon-button danger-icon" title="Delete permanently" aria-label="Delete permanently" onClick={() => void deleteOne(detailId)}><Trash2 size={15} /></button></> : <button className="icon-button danger-icon" title="Move to Trash" aria-label="Move to Trash" onClick={() => void trashSelectedFromDetail(detailId, window.notiert, setToast, setError, setDetailId, setDetail)}><Trash2 size={15} /></button>}</> : <><button className="button secondary small" onClick={() => hasEdits ? setDiscardPrompt(true) : setEditing(false)}>Cancel</button><button className="button primary small" onClick={() => void saveEdit()}><Check size={14} /> Save</button></>}</div></div>
             {!detail ? <div className="detail-loading"><span className="spinner" /></div> : <>
               <div className="detail-meta"><span>{formatDateTime(detail.createdAt)}</span>{detail.updatedAt !== detail.createdAt && <span>Edited {formatDateTime(detail.updatedAt)}</span>}{detail.completedAt != null && <span className="detail-completed-at">Done {formatDateTime(detail.completedAt)}</span>}{detail.kind === 'task' && view !== 'trash' && !editing && <button type="button" className="detail-completion-action" onClick={() => void toggleDetailCompletion()}><CheckCircle2 size={13} /> {detail.completedAt != null ? 'Reopen to Backlog' : 'Mark as done'}</button>}</div>
-              {editing ? <><textarea className="note-editor" value={editText} onChange={(event) => setEditText(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); if (hasEdits) setDiscardPrompt(true); else setEditing(false) } }} aria-label="Edit item" /><label className="detail-category-select">Category <select aria-label="Item category" value={editCategoryId ?? ''} onChange={(event) => setEditCategoryId(event.target.value || null)}><option value="">Unassigned</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><div className="detail-tags"><span className="tags-field-label">Tags</span><TagEditor tags={editTags} draft={tagDraft} onTagsChange={setEditTags} onDraftChange={setTagDraft} suggestions={availableTags} /></div></> : <div className="detail-note-text">{detail.body || (detail.images.length ? null : <span className="muted">Empty item</span>)}</div>}
-              <ItemImages images={detail.images} />
-              {editing ? <div className="editor-bottom"><span>{[...editText].length.toLocaleString()} / 50,000</span></div> : <><div className="detail-tags"><span className="tags-field-label">Category</span><span className="detail-tag-list">{categories.find((category) => category.id === detail.categoryId)?.name ?? 'Unassigned'}</span></div><div className="detail-tags"><span className="tags-field-label">Tags</span><span className="detail-tag-list">{detail.tags.length ? detail.tags.map((tag) => <span className="note-tag-chip" key={tag} style={{ color: tagRecords.find((record) => record.name.toLocaleLowerCase() === tag.toLocaleLowerCase())?.color }}>{tag}</span>) : 'No tags'}</span></div>{view !== 'trash' && <button className="button secondary edit-button" onClick={() => { setEditing(true); setEditText(detail.body); setEditTags(detail.tags); setEditCategoryId(detail.categoryId); setTagDraft('') }}>Edit item <ArrowRight size={14} /></button>}</>}
+              {editing ? <><textarea className="note-editor" onPaste={imageEdit.onPaste} value={editText} onChange={(event) => setEditText(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); if (hasEdits) setDiscardPrompt(true); else setEditing(false) } }} aria-label="Edit item" /><CategoryPicker categories={categories} subcategories={subcategories} categoryId={editCategoryId} subcategoryId={editSubcategoryId} onChange={(category,subcategory)=>{setEditCategoryId(category);setEditSubcategoryId(subcategory)}}/><div className="detail-tags"><span className="tags-field-label">Tags</span><TagEditor tags={editTags} draft={tagDraft} onTagsChange={setEditTags} onDraftChange={setTagDraft} suggestions={availableTags} /></div></> : <div className="detail-note-text">{detail.body || (detail.images.length ? null : <span className="muted">Empty item</span>)}</div>}
+              <ItemImages key={detail.id} images={editing ? imageEdit.images : detail.images} expanded={!detail.body.trim()} onRemove={editing ? imageEdit.remove : undefined} disabled={imageEdit.pending} />
+              {editing && <span className="image-paste-hint">{imageEdit.pending ? 'Reading image…' : 'Paste a screenshot with Ctrl+V · up to 5 images'}</span>}
+              {editing ? <div className="editor-bottom"><span>{[...editText].length.toLocaleString()} / 50,000</span></div> : <><div className="detail-tags"><span className="tags-field-label">Category</span><span className="detail-tag-list">{(categories.find((category) => category.id === detail.categoryId)?.name ?? 'Unassigned')+(detail.subcategoryId?' / '+(subcategories.find(item=>item.id===detail.subcategoryId)?.name??''): '')}</span></div><div className="detail-tags"><span className="tags-field-label">Tags</span><span className="detail-tag-list">{detail.tags.length ? detail.tags.map((tag) => <span className="note-tag-chip" key={tag} style={{ color: tagRecords.find((record) => record.name.toLocaleLowerCase() === tag.toLocaleLowerCase())?.color }}>{tag}</span>) : 'No tags'}</span></div>{view !== 'trash' && <button className="button secondary edit-button" onClick={() => { imageEdit.reset(detail.images); setEditing(true); setEditText(detail.body); setEditTags(detail.tags); setEditCategoryId(detail.categoryId);setEditSubcategoryId(detail.subcategoryId??null); setTagDraft('') }}>Edit item <ArrowRight size={14} /></button>}</>}
             </>}
           </section>}
         </div>
       </>}
     </main>
     {toast && <div className="toast" role="status"><Check size={15} />{toast}</div>}
-    {browserCaptureOpen && <div className="modal-backdrop"><form className="dialog-card browser-capture-dialog" role="dialog" aria-modal="true" aria-labelledby="browser-capture-title" onSubmit={(event) => { event.preventDefault(); void submitBrowserCapture() }}><div className="event-dialog-kicker">QUICK CAPTURE</div><h2 id="browser-capture-title">Capture a thought</h2><textarea autoFocus aria-label="Capture text" placeholder="What’s on your mind?" value={browserCaptureText} onChange={(event) => setBrowserCaptureText(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') setBrowserCaptureOpen(false) }} /><label className="browser-capture-category">Category <select aria-label="Capture category" value={browserCaptureCategoryId ?? ''} onChange={(event) => setBrowserCaptureCategoryId(event.target.value || null)}><option value="">Unassigned</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><div className="dialog-actions"><button type="button" className="button secondary" onClick={() => setBrowserCaptureOpen(false)}>Cancel</button><button type="submit" className="button primary" disabled={!browserCaptureText.trim()}>Save to Inbox</button></div></form></div>}
-    {discardPrompt && <div className="modal-backdrop"><div className="dialog-card" role="dialog" aria-modal="true" aria-labelledby="discard-title"><h2 id="discard-title">Unsaved changes</h2><p>Save your edits before leaving this item?</p><div className="dialog-actions"><button className="button secondary" onClick={() => { pendingEditorAction.current = null; setDiscardPrompt(false) }}>Stay</button><button className="button secondary" onClick={() => { setDiscardPrompt(false); setEditing(false); if (detail) { setEditText(detail.body); setEditTags(detail.tags); setEditCategoryId(detail.categoryId); setTagDraft('') } const next = pendingEditorAction.current; pendingEditorAction.current = null; next?.() }}>Discard</button><button className="button primary" onClick={() => { setDiscardPrompt(false); void saveEdit() }}>Save</button></div></div></div>}
+    {browserCaptureOpen && <div className="modal-backdrop"><form className="dialog-card browser-capture-dialog" role="dialog" aria-modal="true" aria-labelledby="browser-capture-title" onSubmit={(event) => { event.preventDefault(); void submitBrowserCapture() }}><div className="event-dialog-kicker">QUICK CAPTURE</div><h2 id="browser-capture-title">Capture a thought</h2><textarea autoFocus aria-label="Capture text" placeholder="What’s on your mind?" value={browserCaptureText} onChange={(event) => setBrowserCaptureText(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') setBrowserCaptureOpen(false) }} /><label className="browser-capture-category">Category <select aria-label="Capture category" value={browserCaptureCategoryId ?? ''} onChange={(event) => {setBrowserCaptureCategoryId(event.target.value || null);setBrowserCaptureSubcategoryId(null)}}><option value="">Unassigned</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><label>Subcategory<select aria-label="Capture subcategory" disabled={!browserCaptureCategoryId} value={browserCaptureSubcategoryId??''} onChange={event=>setBrowserCaptureSubcategoryId(event.target.value||null)}><option value="">No subcategory</option>{subcategories.filter(sub=>sub.categoryId===browserCaptureCategoryId).map(sub=><option key={sub.id} value={sub.id}>{sub.name}</option>)}</select></label><TagEditor tags={browserCaptureTags} draft={browserCaptureTagDraft} onTagsChange={setBrowserCaptureTags} onDraftChange={setBrowserCaptureTagDraft} suggestions={availableTags}/>
+<div className="dialog-actions"><button type="button" className="button secondary" onClick={() => setBrowserCaptureOpen(false)}>Cancel</button><button type="submit" className="button primary" disabled={!browserCaptureText.trim()}>Save to Inbox</button></div></form></div>}
+    {discardPrompt && <div className="modal-backdrop"><div className="dialog-card" role="dialog" aria-modal="true" aria-labelledby="discard-title"><h2 id="discard-title">Unsaved changes</h2><p>Save your edits before leaving this item?</p><div className="dialog-actions"><button className="button secondary" onClick={() => { pendingEditorAction.current = null; setDiscardPrompt(false) }}>Stay</button><button className="button secondary" onClick={() => { setDiscardPrompt(false); setEditing(false); if (detail) { setEditText(detail.body); setEditTags(detail.tags); setEditCategoryId(detail.categoryId);setEditSubcategoryId(detail.subcategoryId??null); setTagDraft('') } const next = pendingEditorAction.current; pendingEditorAction.current = null; next?.() }}>Discard</button><button className="button primary" onClick={() => { setDiscardPrompt(false); void saveEdit() }}>Save</button></div></div></div>}
   </div>
 }
 
 async function trashSelectedFromDetail(id: string, api: Window['notiert'], setToast: (value: string) => void, setError: (value: string) => void, setDetailId: (value: string | null) => void, setDetail: (value: NoteDetail | null) => void) {
-  const result = await api.notes.trash([id])
-  if (result.ok) { setDetailId(null); setDetail(null); setToast('Note moved to Trash') } else setError(result.message)
+  try { const result=await api.notes.trash([id]); if(result.ok){setDetailId(null);setDetail(null);setToast('Note moved to Trash')}else setError(result.message) }catch(reason){setError(reason instanceof Error?reason.message:'Could not move item to Trash.')}
 }
 
 type SortableRowProps = {
@@ -444,7 +481,7 @@ function SortablePriorityNote({ note, renderRow }: { note: NoteDetail; renderRow
 }
 
 function SettingsPanel({ settings, displays, saveSettings, onBackup, onRestore, firstRun, onFinish, onTrayOnly, recordingShortcut, setRecordingShortcut, onShortcutKey }: {
-  settings: Settings | null; displays: { id: number; label: string; primary: boolean }[]; saveSettings: (update: Partial<Pick<Settings, 'shortcut' | 'shortcutEnabled' | 'launchAtLogin' | 'theme' | 'monitor' | 'captureProtection' | 'protectionTestApp' | 'protectionTestDate' | 'closeToTray' | 'firstRunComplete'>>) => Promise<boolean>; onBackup: () => void; onRestore: () => void; firstRun: boolean; onFinish: (shortcut: string, login: boolean) => void; onTrayOnly: (login: boolean) => void; recordingShortcut: boolean; setRecordingShortcut: (value: boolean) => void; onShortcutKey: (event: ReactKeyboardEvent<HTMLButtonElement>) => void
+  settings: Settings | null; displays: { id: number; label: string; primary: boolean }[]; saveSettings: (update: SettingsUpdate) => Promise<boolean>; onBackup: () => void; onRestore: () => void; firstRun: boolean; onFinish: (shortcut: string, login: boolean) => void; onTrayOnly: (login: boolean) => void; recordingShortcut: boolean; setRecordingShortcut: (value: boolean) => void; onShortcutKey: (event: ReactKeyboardEvent<HTMLButtonElement>) => void
 }) {
   const [activeSection, setActiveSection] = useState('general')
   const [testApp, setTestApp] = useState(settings?.protectionTestApp ?? '')
@@ -452,7 +489,7 @@ function SettingsPanel({ settings, displays, saveSettings, onBackup, onRestore, 
   const [onboardingLogin, setOnboardingLogin] = useState(false)
   useEffect(() => { if (settings) setTestApp(settings.protectionTestApp) }, [settings])
   const shortcutDisplay = (settings?.shortcut ?? 'Control+N').replace('Control', 'Ctrl').replaceAll('+', ' + ')
-  const sectionItems = [{ id: 'general', label: 'General', icon: SettingsIcon }, { id: 'appearance', label: 'Appearance', icon: Sun }, { id: 'sharing', label: 'Screen sharing', icon: Monitor }, { id: 'data', label: 'Data', icon: Archive }, { id: 'about', label: 'About', icon: Info }]
+  const sectionItems = [{ id: 'general', label: 'General', icon: SettingsIcon }, { id: 'calendar', label: 'Calendar', icon: CalendarDays }, { id: 'appearance', label: 'Appearance', icon: Sun }, { id: 'sharing', label: 'Screen sharing', icon: Monitor }, { id: 'data', label: 'Data', icon: Archive }, { id: 'about', label: 'About', icon: Info }]
   return <div className="settings-layout">
     <aside className="settings-nav"><div className="settings-title"><div className="eyebrow">PREFERENCES</div><h1>Settings</h1></div>{sectionItems.map(({ id, label, icon: Icon }) => <button className={activeSection === id ? 'active' : ''} aria-label={label} title={label} aria-current={activeSection === id ? 'page' : undefined} key={id} onClick={() => setActiveSection(id)}><Icon size={15} />{label}</button>)}</aside>
     <section className="settings-content">
@@ -464,10 +501,11 @@ function SettingsPanel({ settings, displays, saveSettings, onBackup, onRestore, 
         <div className="setting-row"><div><b>Capture display</b><span>Choose where the capture bar appears. Missing displays fall back to the pointer's display.</span></div><select className="filter-select setting-select" value={settings?.monitor ?? 'active'} onChange={(event) => void saveSettings({ monitor: event.target.value })}><option value="active">Active window / pointer</option><option value="pointer">Mouse pointer</option><option value="primary">Primary display</option>{displays.map((display) => <option key={display.id} value={`display:${display.id}`}>{display.label}</option>)}</select></div>
         <div className="setting-row"><div><b>Shortcut registration</b><span>{settings?.shortcutRegistered ? 'Ready. The global shortcut is registered.' : 'The selected shortcut could not be registered. Tray capture remains available.'}</span></div><span className={`status-label ${settings?.shortcutRegistered ? 'success' : 'warning'}`}>{settings?.shortcutRegistered ? 'Ready' : 'Tray only'}</span></div>
       </>}
-      {activeSection === 'appearance' && <><div className="settings-heading"><h2>Appearance</h2><p>Keep the interface comfortable in any room.</p></div><div className="theme-choices">{(['system', 'light', 'dark'] as const).map((theme) => <button className={`theme-card ${settings?.theme === theme ? 'selected' : ''}`} key={theme} onClick={() => void saveSettings({ theme })}><div className={`theme-swatch ${theme}`}><span /><i /><i /><i /></div><div><b>{theme === 'system' ? 'System' : theme[0]!.toUpperCase() + theme.slice(1)}</b><span>{theme === 'system' ? 'Follow Windows' : `Use ${theme} appearance`}</span></div>{settings?.theme === theme && <Check size={15} />}</button>)}</div><div className="setting-note"><CircleHelp size={15} /> Geist Sans and Geist Mono are bundled for offline use.</div></>}
+      {activeSection === 'calendar' && <CalendarSettings settings={settings} save={saveSettings} />}
+      {activeSection === 'appearance' && <><div className="settings-heading"><h2>Appearance</h2><p>Keep the interface comfortable in any room.</p></div><div className="theme-choices">{(['system', 'light', 'dark'] as const).map((theme) => <button className={`theme-card ${settings?.theme === theme ? 'selected' : ''}`} key={theme} onClick={() => void saveSettings({ theme })}><div className={`theme-swatch ${theme}`}><span /><i /><i /><i /></div><div><b>{theme === 'system' ? 'System' : theme[0]!.toUpperCase() + theme.slice(1)}</b><span>{theme === 'system' ? 'Follow Windows' : `Use ${theme} appearance`}</span></div>{settings?.theme === theme && <Check size={15} />}</button>)}</div><div className="setting-note"><CircleHelp size={15} /> SN Pro and Geist Mono are bundled for offline use.</div></>}
       {activeSection === 'sharing' && <><div className="settings-heading"><h2>Screen sharing</h2><p>Ask Windows to exclude notiert windows from supported captures.</p></div><div className="protection-card"><div className="protection-icon"><Shield size={17} /></div><div><b>Request capture exclusion</b><span>Best effort. Whether notes are excluded depends on Windows and the meeting or recording app.</span></div><Toggle checked={settings?.captureProtection ?? true} onChange={async (value) => { if (!value && !window.confirm('Notes may appear in screen shares and recordings when exclusion is off. Turn it off?')) return; await saveSettings({ captureProtection: value }) }} label="Capture exclusion" /></div><div className="privacy-copy"><b>Test from another participant's view</b><p>Start a test meeting, share your screen, open notiert, and ask someone on another device whether the capture bar and notes window appear. Repeat after changing the meeting app or Windows version.</p><p>File pickers are native Windows windows and may still be visible. Open export and restore dialogs outside a presentation.</p></div><div className="setting-row"><div><b>Last manual test</b><span>{settings?.protectionTestDate ? settings.protectionTestOS ? `Recorded ${settings.protectionTestDate} · Windows ${settings.protectionTestOS}. Retest after changing the meeting app or Windows build.` : 'The Windows build changed since this test. Retest this setup.' : 'Record what you tested. This is a reminder, not technical verification.'}</span></div><div className="test-fields"><input className="text-field" value={testApp} maxLength={80} placeholder="App / version / mode" onChange={(event) => setTestApp(event.target.value)} /><button className="button secondary small" onClick={() => { const date = todayISO(); void saveSettings({ protectionTestApp: testApp, protectionTestDate: date }) }}>Record today’s test</button></div></div><div className="setting-note warning-note"><Info size={15} /> Exclusion does not protect against remote control, malicious capture tools, or cameras. File pickers may be visible; open them outside a presentation.</div></>}
       {activeSection === 'data' && <><div className="settings-heading"><h2>Data</h2><p>Your notes are stored locally and are not encrypted by notiert.</p></div><div className="data-location"><div className="data-folder-icon"><FolderOpen size={18} /></div><div><b>Local storage</b><span>SQLite database · app data folder</span></div><button className="button secondary small" onClick={() => void window.notiert.settings.openFolder()}>Open folder</button></div><div className="data-actions"><div><b>Export notes</b><span>Save plain text or Markdown to a folder you choose.</span></div><div><button className="button secondary small" onClick={() => void window.notiert.data.export({ scope: 'all', format: 'txt' })}>Export TXT</button><button className="button secondary small" onClick={() => void window.notiert.data.export({ scope: 'all', format: 'md' })}>Export Markdown</button></div></div><div className="data-actions"><div><b>SQLite backup</b><span>{settings?.backupWarning ? 'The last backup failed. Notes can still save; try creating a backup again.' : settings?.lastBackupAt ? `Last backup ${formatDateTime(settings.lastBackupAt)}.` : 'No backup has been created yet.'} A full recovery snapshot of notes, tags, tasks, scheduled meetings, and Trash.</span></div><div><button className="button secondary small" onClick={() => void onBackup()}>Create backup</button><button className="button secondary small" onClick={() => void onRestore()}>Restore backup</button></div></div><div className="setting-note"><Info size={15} /> Restoring replaces current data. notiert creates a safety backup first. Independent backups can retain notes removed from Trash. Do not sync the live SQLite database through a shared folder.</div></>}
-      {activeSection === 'about' && <><div className="settings-heading"><h2>About notiert</h2><p>A quiet, local desktop utility for capturing a thought during a meeting.</p></div><div className="about-card"><div className="about-logo">n</div><div><b>notiert</b><span>Version 0.1.0 · Windows 11 x64</span></div></div><div className="setting-row"><div><b>Local diagnostics</b><span>Exports app version, Windows build, shortcut status, and database availability. No note or meeting content.</span></div><button className="button secondary small" onClick={async () => { const result = await window.notiert.data.diagnostics(); if (!result.ok) window.alert(result.message) }}>Export diagnostics</button></div><div className="license-box"><b>Third-party licenses</b><p>Electron · Chromium · React · ReUI · dnd-kit · Geist typefaces · Lucide icons · SQLite · other bundled dependencies.</p><p>See the licenses folder in the installed app for full notices.</p></div></>}
+      {activeSection === 'about' && <><div className="settings-heading"><h2>About notiert</h2><p>A quiet, local desktop utility for capturing a thought during a meeting.</p></div><div className="about-card"><div className="about-logo">n</div><div><b>notiert</b><span>Version 0.1.0 · Windows 11 x64</span></div></div><div className="setting-row"><div><b>Local diagnostics</b><span>Exports app version, Windows build, shortcut status, and database availability. No note or meeting content.</span></div><button className="button secondary small" onClick={async () => { const result = await window.notiert.data.diagnostics(); if (!result.ok) window.alert(result.message) }}>Export diagnostics</button></div><div className="license-box"><b>Third-party licenses</b><p>Electron · Chromium · React · ReUI · dnd-kit · SN Pro · Geist Mono · Lucide icons · SQLite · other bundled dependencies.</p><p>See the licenses folder in the installed app for full notices.</p></div></>}
     </section>
     {firstRun && <div className="modal-backdrop setup-backdrop"><div className="setup-dialog"><div className="setup-brand"><span className="brand-glyph">n</span><span>notiert</span><small>FIRST RUN</small></div><h2>Catch a thought.<br />Keep your place.</h2><p>Press a shortcut, type a note, and return to what you were doing. Notes stay on this device.</p><div className="setup-shortcuts"><button className={onboardingShortcut === 'Control+N' ? 'selected' : ''} onClick={() => setOnboardingShortcut('Control+N')}><kbd>Ctrl</kbd><b>+</b><kbd>N</kbd><span>Recommended</span></button><button className={onboardingShortcut === 'Control+Alt+N' ? 'selected' : ''} onClick={() => setOnboardingShortcut('Control+Alt+N')}><kbd>Ctrl</kbd><b>+</b><kbd>Alt</kbd><b>+</b><kbd>N</kbd></button></div><div className="setup-notice"><Shield size={16} /><span>notiert asks Windows to hide its windows from supported captures. Meeting apps may still show them; test from another participant's device.</span></div><label className="setup-login"><input type="checkbox" checked={onboardingLogin} onChange={(event) => setOnboardingLogin(event.target.checked)} /> Launch quietly when I sign in</label><div className="dialog-actions"><button className="button secondary" onClick={() => onTrayOnly(onboardingLogin)}>Use tray only</button><button className="button primary" onClick={() => onFinish(onboardingShortcut, onboardingLogin)}>Save and continue <ArrowRight size={15} /></button></div><small className="setup-foot">Ctrl+N replaces the usual New shortcut while notiert is running.</small></div></div>}
   </div>

@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PlannerEvent, PlannerTask } from '../../shared/contracts'
-
-function valueOf<T>(result: { ok: true; value: T } | { ok: false; message: string }): T {
-  if (!result.ok) throw new Error(result.message)
-  return result.value
-}
+import { resultValue as valueOf } from '../apiResult'
 
 export function usePlannerData(from: string, to: string) {
   const [tasks, setTasks] = useState<PlannerTask[]>([])
@@ -13,8 +9,12 @@ export function usePlannerData(from: string, to: string) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const requestNumber = useRef(0)
+  const activeRange = useRef({ from, to })
+  activeRange.current = { from, to }
 
   const refresh = useCallback(async () => {
+    // A mutation started in an older view may finish after navigation.
+    if (activeRange.current.from !== from || activeRange.current.to !== to) return
     const request = ++requestNumber.current
     setLoading(true)
     try {
@@ -31,7 +31,7 @@ export function usePlannerData(from: string, to: string) {
     }
   }, [from, to])
 
-  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => { void refresh(); return () => { requestNumber.current++ } }, [refresh])
   useEffect(() => window.notiert.planner.onChanged(() => { void refresh() }), [refresh])
   return { tasks, events, tags, loading, error, refresh }
 }
